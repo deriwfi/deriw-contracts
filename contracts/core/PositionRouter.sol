@@ -192,22 +192,6 @@ contract PositionRouter is Synchron, ReentrancyGuard, ITransferAmountData {
     event SetIsLeverageEnabled(bool isLeverageEnabled);
     event SetDelayValues(uint256 minBlockDelayKeeper, uint256 minTimeDelayPublic, uint256 maxTimeDelay);
     event CreateIncreaseTransferEvent(IncreaseTransferEvent iEvent);
-    
-    event IncreasePositionReferral(
-        address account,
-        uint256 sizeDelta,
-        uint256 marginFeeBasisPoints,
-        bytes32 referralCode,
-        address referrer
-    );
-
-    event DecreasePositionReferral(
-        address account,
-        uint256 sizeDelta,
-        uint256 marginFeeBasisPoints,
-        bytes32 referralCode,
-        address referrer
-    );
 
     event ExecuteIncreaseFeeEvent(
         bytes32 key,
@@ -368,6 +352,7 @@ contract PositionRouter is Synchron, ReentrancyGuard, ITransferAmountData {
         bytes32 _referralCode,
         address _callbackTarget
     ) external nonReentrant returns (bytes32) {
+        require(_referralCode == bytes32(0), "_referralCode err");
         require(!blackList.getBlackListAddressIsIn(msg.sender), "is blackList");
         require(!blackList.isFusing(), "has fusing");
         uint256 len = _path.length;
@@ -382,7 +367,6 @@ contract PositionRouter is Synchron, ReentrancyGuard, ITransferAmountData {
         
         ISlippage(IVault(vault).slippage()).validateLever(msg.sender, usdt, _indexToken, _amountIn, _sizeDelta, _isLong);
         phase.validateSizeDelta(msg.sender, _indexToken, _sizeDelta, _isLong);
-        _setTraderReferralCode(_referralCode);
 
         bytes32 key = _createIncreasePosition(
             msg.sender,
@@ -462,7 +446,6 @@ contract PositionRouter is Synchron, ReentrancyGuard, ITransferAmountData {
         uint256 afterFeeAmount;
         address token = request.path[request.path.length - 1];
 
-        referralData.addSizeDelta(request.account, token, request.sizeDelta);
         if (request.amountIn > 0) {
             afterFeeAmount = request.amountIn;
             if(depositFee > 0) {
@@ -706,12 +689,6 @@ contract PositionRouter is Synchron, ReentrancyGuard, ITransferAmountData {
         return request.path;
     }
 
-    function _setTraderReferralCode(bytes32 _referralCode) internal {
-        if (_referralCode != bytes32(0) && referralStorage != address(0)) {
-            IReferralStorage(referralStorage).setTraderReferralCode(msg.sender, _referralCode);
-        }
-    }
-
     function _validateExecution(
         uint256 _positionBlockNumber, 
         uint256 _positionBlockTime, 
@@ -941,8 +918,6 @@ contract PositionRouter is Synchron, ReentrancyGuard, ITransferAmountData {
             _price,
             _amount
         );
-
-        _emitIncreasePositionReferral(_account, _sizeDelta);
     }
 
     function _decreasePosition(
@@ -981,53 +956,11 @@ contract PositionRouter is Synchron, ReentrancyGuard, ITransferAmountData {
         ;
         ITimelock(timelock).disableLeverage(_vault);
 
-        _emitDecreasePositionReferral(
-            _account,
-            _sizeDelta
-        );
-
         return amountOut;
     }
 
     function getAmount(address token, address account) public view returns(uint256) {
         return IERC20(token).balanceOf(account);
-    }
-
-    function _emitIncreasePositionReferral(address _account, uint256 _sizeDelta) internal {
-        address _referralStorage = referralStorage;
-        if (_referralStorage == address(0)) { return; }
-
-
-        (bytes32 referralCode, address referrer) = IReferralStorage(_referralStorage).getTraderReferralInfo(_account);
-        if (referralCode == bytes32(0)) { return; }
-
-        address timelock = IVault(vault).gov();
-
-        emit IncreasePositionReferral(
-            _account,
-            _sizeDelta,
-            ITimelock(timelock).marginFeeBasisPoints(),
-            referralCode,
-            referrer
-        );
-    }
-
-    function _emitDecreasePositionReferral(address _account, uint256 _sizeDelta) internal {
-        address _referralStorage = referralStorage;
-        if (_referralStorage == address(0)) { return; }
-
-        (bytes32 referralCode, address referrer) = IReferralStorage(_referralStorage).getTraderReferralInfo(_account);
-        if (referralCode == bytes32(0)) { return; }
-
-        address timelock = IVault(vault).gov();
-
-        emit DecreasePositionReferral(
-            _account,
-            _sizeDelta,
-            ITimelock(timelock).marginFeeBasisPoints(),
-            referralCode,
-            referrer
-        );
     }
 
     function _shouldDeductFee(

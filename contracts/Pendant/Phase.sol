@@ -15,9 +15,9 @@ import "./interfaces/IPhaseStruct.sol";
 import "./interfaces/ICoinData.sol";
 import "../referrals/interfaces/IFeeBonus.sol";
 import "../meme/interfaces/IMemeData.sol";
+import "../upgradeability/Synchron.sol";
 
-
-contract Phase is IStruct, IPhaseStruct {
+contract Phase is Synchron, IStruct, IPhaseStruct {
     using SafeERC20 for IERC20;
     using EnumerableSet for EnumerableSet.AddressSet;
 
@@ -35,6 +35,11 @@ contract Phase is IStruct, IPhaseStruct {
     bytes32 public constant fiveCode = 0x0000000000000000000000000000000000000000000000000000000000000005;
     // 6. Slippage
     bytes32 public constant sixCode = 0x0000000000000000000000000000000000000000000000000000000000000006;
+    
+    uint256 public constant DECI = 1e30;
+    uint256 public constant muti = 1e12;
+    uint256 public constant baseRate = 10000;
+    uint256 public constant MUTI = 1e18;
 
     IVault public vault;
     IERC20 public GLP;
@@ -46,33 +51,28 @@ contract Phase is IStruct, IPhaseStruct {
     address public USDT;
     address public feeBonus;
 
-    uint256 public constant DECI = 1e30;
-    uint256 public constant muti = 1e12;
-    uint256 public constant baseRate = 10000;
-    uint256 public constant MUTI = 1e18;
-    uint256 public totalRate = 100000;
-    uint256 public sideRate = 20000;
-    uint256 public defaultPoolRate = 6000;
-    uint256 public exponent = 1e10;
-    uint256 public feeTime = 60 minutes;
+    uint256 public totalRate;
+    uint256 public sideRate;
+    uint256 public defaultPoolRate;
+    uint256 public exponent;
+    uint256 public feeTime;
     uint256 public totalPhasefee;
     uint256 public haveTotalPhasefee;
 
     bool public initialized;
 
     mapping(address => uint256) public lastPrice;
-    mapping(address => uint256) poolRate;
-    mapping(address => bool) isPoolRate;
-    mapping(address => mapping(address => EnumerableSet.AddressSet)) longUsers;
-    mapping(address => mapping(address =>  EnumerableSet.AddressSet)) shortUsers;
     mapping(address => bool) public hanlder;
     mapping(address => bool) public operator;
-    mapping(bytes32 => uint8) public keyToIsLong;
-    mapping(address => mapping(address => mapping(address => UserData))) userData;  
     mapping(uint8 => bytes32) public typeCode;
     mapping(bytes32 => uint8) public codeType;
     mapping(address => TokenData) public tokenData;
     mapping(address => bool) public isTokenSet;
+
+    mapping(address => mapping(address => mapping(address => UserData))) userData;  
+    mapping(address => mapping(address => EnumerableSet.AddressSet)) longUsers;
+    mapping(address => mapping(address => EnumerableSet.AddressSet)) shortUsers;
+
 
     event SetTokenLeverageAndMaxSize(TokenData tData);
     event SetHanlder(address account, bool isAdd);
@@ -116,16 +116,26 @@ contract Phase is IStruct, IPhaseStruct {
         uint256 pid
     );
 
-    constructor(address usdt, address glp) {
-        USDT = usdt;
-        GLP = IERC20(glp);
-        gov = msg.sender;
-        _setCode();
-    }
-
     modifier onlyGov() {
         require(gov == msg.sender, "gov err");
         _;
+    }
+
+    function initialize(address usdt, address glp) external {
+        require(!initialized, "init err");
+        initialized = true;
+
+        USDT = usdt;
+        GLP = IERC20(glp);
+        gov = msg.sender;
+
+        totalRate = 100000;
+        sideRate = 20000;
+        defaultPoolRate = 6000;
+        exponent = 1e10;
+        feeTime = 60 minutes;
+
+        _setCode();
     }
 
     function setGov(address account) external onlyGov {
@@ -277,25 +287,6 @@ contract Phase is IStruct, IPhaseStruct {
         }
     }
 
-    function getTokenAmount(address token) external view returns(uint256) {
-        return IERC20(token).balanceOf(address(this));
-    }
-
-    function getCollateralSize(
-        address user,
-        address collateralToken, 
-        address indexToken,
-        uint256 size,
-        bool isLong
-    ) public view returns(uint256) {
-        (, uint256 collateral,,,,,,) =
-        vault.getPosition(user, collateralToken, indexToken, isLong);
-        if(size > collateral) {
-            size = collateral;
-        }
-        return size;
-    }
-
     function _collectLongFees(
         address user,
         address collateralToken, 
@@ -357,6 +348,22 @@ contract Phase is IStruct, IPhaseStruct {
             }
         }
     }
+
+    function getCollateralSize(
+        address user,
+        address collateralToken, 
+        address indexToken,
+        uint256 size,
+        bool isLong
+    ) public view returns(uint256) {
+        (, uint256 collateral,,,,,,) =
+        vault.getPosition(user, collateralToken, indexToken, isLong);
+        if(size > collateral) {
+            size = collateral;
+        }
+        return size;
+    }
+
        
     function getSize(
         address user,
@@ -447,36 +454,41 @@ contract Phase is IStruct, IPhaseStruct {
     }
 
     function getPoolRate(address pool) public view returns(uint256) {
-        if(isPoolRate[pool]) {
-            return poolRate[pool];
+        if(pool == address(0)) {
+            return 0;
         }
         return defaultPoolRate;
     }
 
     function _getLongShortValue(address indexToken) internal view returns(int256 longValue, int256 shortValue) {
-        (
-            int256 globalShortSizes,
-            int256 globalShortAveragePrices,
-            int256 globalLongSizes,
-            int256 globalLongAveragePrices
-        ) = getSizeValue(indexToken);
+        int256 globalShortSizes = int256(vault.globalShortSizes(indexToken));
+        int256 globalLongSizes = int256(vault.globalLongSizes(indexToken));
+        if(globalShortSizes == 0 && globalLongSizes == 0) {
+            return(0, 0);
+        }
 
-        (int256 maxPrice, int256 minPrice) = getPrice(indexToken);
+        int256 globalShortAveragePrices = int256(vault.globalShortAveragePrices(indexToken));
+        int256 globalLongAveragePrices = int256(vault.globalLongAveragePrices(indexToken));
+
+
 
         {
             if(globalLongAveragePrices == 0 || globalShortAveragePrices == 0) {
                 if(globalLongAveragePrices == 0) {
                     longValue = 0;
                 } else {
+                    int256 maxPrice = int256(vault.getMaxPrice(indexToken));
                     longValue = globalLongSizes  * (maxPrice - globalLongAveragePrices) / globalLongAveragePrices;
                 }
 
                 if(globalShortAveragePrices == 0) {
                     shortValue = 0;
                 } else {
+                    int256 minPrice = int256(vault.getMinPrice(indexToken));
                     shortValue = -globalShortSizes * (minPrice - globalShortAveragePrices) / globalShortAveragePrices;
                 }
             } else {
+                (int256 maxPrice, int256 minPrice) = getPrice(indexToken);
                 longValue = globalLongSizes  * (maxPrice - globalLongAveragePrices) / globalLongAveragePrices;
                 shortValue = -globalShortSizes * (minPrice - globalShortAveragePrices) / globalShortAveragePrices;
             }
@@ -505,20 +517,6 @@ contract Phase is IStruct, IPhaseStruct {
     function getPrice(address token) public view returns(int256 maxPrice, int256 minPrice) {
         maxPrice = int256(vault.getMaxPrice(token));
         minPrice = int256(vault.getMinPrice(token));
-        require(maxPrice > 0 && minPrice > 0, "price err");
-    }
-
-    function getSizeValue(address indexToken) public view returns (
-        int256 globalShortSizes,
-        int256 globalShortAveragePrices,
-        int256 globalLongSizes,
-        int256 globalLongAveragePrices
-    ) {
-        globalShortSizes = int256(vault.globalShortSizes(indexToken));
-        globalLongSizes = int256(vault.globalLongSizes(indexToken));
-        globalShortAveragePrices = int256(vault.globalShortAveragePrices(indexToken));
-        globalLongAveragePrices = int256(vault.globalLongAveragePrices(indexToken));
-
     }
 
     function getUserData(

@@ -20,6 +20,7 @@ interface IStruct {
         uint256 needCompoundAmount;
         uint256 actCompoundAmount;
         uint256 fundraisingValue;
+        uint256 userAmount;
         bool isGet;
         bool isFundraise;
         bool isAllResubmit;

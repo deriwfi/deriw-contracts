@@ -256,7 +256,7 @@ contract Slippage is  Synchron, IEventStruct {
         }
     }
 
-    function getLongRate(address indexToken, uint256 size)  public view returns(uint256) {
+    function getLongRate(address indexToken, uint256 size) public view returns(uint256) {
         (uint256 globalLongSizes, uint256 netAmount) = getLongNetAmount(indexToken, size);
         if(netAmount == 0) {
             return 0;
@@ -359,7 +359,10 @@ contract Slippage is  Synchron, IEventStruct {
     ) external view returns(uint256, uint256) {
         (uint256 _min, uint256 num) = _getValue(indexToken, poolTotalValue, _poolValue, min, isLong);
 
-        return IVaultUtils(vault.vaultUtils()).getValueFor(user, isLong, _min, num);
+        if(isCheck) {
+            return IVaultUtils(vault.vaultUtils()).getValueFor(user, isLong, _min, num);
+        }
+        return (_min, num);
     }
 
     function getMinValueFor(
@@ -615,6 +618,12 @@ contract Slippage is  Synchron, IEventStruct {
 
     function getIndexToken(uint256 index) external view returns(address) {
         return indexTokens.at(index);
+    }
+
+    bool public isCheck;
+    function setIsCheck(bool _isCheck) external {
+        require(msg.sender == gov || coinData.operator(msg.sender), "set err");
+        isCheck = _isCheck;
     }
 }  
 

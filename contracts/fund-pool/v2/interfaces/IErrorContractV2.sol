@@ -131,4 +131,7 @@ interface IErrorContractV2 is IStruct {
         address pool, 
         uint256 amount
     ) external view returns(bool);
+
+    function foundRouterV2() external view returns(address);
+    
 }

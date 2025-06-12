@@ -385,18 +385,4 @@ contract Timelock is ITimelock, Ownable, IPhaseStruct {
     function setManager(address _vault, address _manager, bool _isManager) external onlyAdmin {
         IVault(_vault).setManager(_manager, _isManager);
     }
-    
-    // function setTokenConfig(
-    //     address _vault, 
-    //     address _token,
-    //     uint256 _tokenDecimals,
-    //     uint256 _redemptionBps,
-    //     uint256 _minProfitBps,
-    //     bool _isStable,
-    //     bool _isShortable,
-    //     bool _iswrapped,
-    //     bool _isFrom
-    // ) external onlyAdmin {
-    //     IVault(_vault).setTokenConfig(_token, _tokenDecimals, _redemptionBps, _minProfitBps, _isStable, _isShortable, _iswrapped, _isFrom);
-    // }
 }

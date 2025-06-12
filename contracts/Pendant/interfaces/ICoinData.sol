@@ -29,4 +29,6 @@ interface ICoinData is IPhaseStruct {
     function getCoinType(address token) external view returns(uint8);
     
     function getPoolValue(address _vault, address indexToken) external view returns(uint256, bool, bool);
+
+    function operator(address account) external view returns(bool);
 }

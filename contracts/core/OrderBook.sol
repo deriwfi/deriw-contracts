@@ -406,7 +406,7 @@ contract OrderBook is Synchron, ReentrancyGuard, IOStruct, IOrderStruct {
             tData.afterValue
         );
 
-        referralData.addSizeDelta(order.account, order.purchaseToken, order.sizeDelta);
+
         address timelock = IVault(vault).gov();
         ITimelock(timelock).setIsLeverageEnabled(vault, true);
         IRouter(router).pluginIncreasePosition(oneCode, order.account, order.collateralToken, order.indexToken, order.sizeDelta, order.isLong, order.purchaseTokenAmount);

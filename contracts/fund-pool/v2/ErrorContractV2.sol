@@ -92,13 +92,14 @@ contract ErrorContractV2 is IStruct {
             "create err"
         );
         
-        require(id != 0, "pid err");
-        // FundInfoV2 memory fInfo1 = poolDataV2.getFoundInfo(pool, id);
-        // require(
-        //     fundInfo_.startTime < fInfo1.lockEndTime && 
-        //     block.timestamp >= fInfo1.startTime,
-        //     "can not create"
-        // );
+        require(id > 1, "pid err");
+        FundInfoV2 memory fInfo1 = poolDataV2.getFoundInfo(pool, id);
+        require(
+            fundInfo_.startTime < fInfo1.lockEndTime && 
+            fundInfo_.endTime == fInfo1.lockEndTime &&
+            block.timestamp >= fInfo1.startTime,
+            "can not create"
+        );
 
         return true;
     }
@@ -148,7 +149,7 @@ contract ErrorContractV2 is IStruct {
         return foundReader.getOutAmount(token, amount);
     }
 
-    function getMaxDepossit(address pool, uint256 pid) external view returns(uint256, uint256) {
+    function getMaxDeposit(address pool, uint256 pid) external view returns(uint256, uint256) {
         FoundStateV2 memory fState = poolDataV2.getFoundState(pool, pid);
         TxInfo memory tInfo = poolDataV2.getTxInfo(pool);
         
@@ -260,7 +261,7 @@ contract ErrorContractV2 is IStruct {
             "claim err"
         );
 
-        amount = fState.outAmount * lessLp / fState.totalLpAmount;
+        amount = fState.userAmount * lessLp / fState.totalLpAmount;
 
         require(amount > 0, "no amount");
     }

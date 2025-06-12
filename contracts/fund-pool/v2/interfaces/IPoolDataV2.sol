@@ -103,7 +103,14 @@ interface IPoolDataV2 is IStruct {
     ) external;
 
     function setGov(address account) external;
-
     
     function setMinDepositAmount(address pool, uint256 amount) external;
+
+    function riskClaimAmount(address pool, uint256 pid) external view returns(uint256);
+
+    function profitClaimAmount(address pool, uint256 pid) external view returns(uint256);
+
+    function risk() external view returns(address);
+
+    function feeBonus() external view returns(address);
 }

@@ -13,6 +13,7 @@ import "../../core/interfaces/IERC20Metadata.sol";
 import "../../upgradeability/Synchron.sol";
 import "../../referrals/interfaces/IFeeBonus.sol";
 import "../../core/interfaces/ITransferAmountData.sol";
+import "./interfaces/IRisk.sol";
 
 contract PoolDataV2 is Synchron, IStruct, ITransferAmountData {
     using SafeERC20 for IERC20;
@@ -20,6 +21,8 @@ contract PoolDataV2 is Synchron, IStruct, ITransferAmountData {
 
     IFundFactoryV2 public factoryV2;
     IErrorContractV2 public errContractV2;  
+    IRisk public risk;
+
     address public lpToken;
     address public glpRewardRouter;
     address public gov;
@@ -48,6 +51,13 @@ contract PoolDataV2 is Synchron, IStruct, ITransferAmountData {
     mapping(address => mapping(address => mapping(uint256 => UserInfoV2))) userInfo; 
     mapping(address => mapping(address => mapping(uint256 => uint256))) public lastTime; 
     mapping(address => mapping(uint256 => uint256)) public feeAmount;
+    mapping(address => mapping(uint256 => uint256)) public riskClaimAmount;
+    mapping(address => mapping(uint256 => uint256)) public profitClaimAmount;
+
+    struct ProfitAmount {
+        address account;
+        uint256 amount;
+    }
 
     event CreateAndInit(address pool, address token,  TxInfo txInfo_, uint256 pid, FundInfoV2 fundInfo_);
     event CreatePeriod(address pool, uint256 pid, FundInfoV2 fundInfo_);
@@ -62,6 +72,10 @@ contract PoolDataV2 is Synchron, IStruct, ITransferAmountData {
     event Deposit(DepositEvent dEvent);
     event CompoundToNext(address pool, address user, uint256 pid, uint256 nextPid, bool isAll);
     event TrendsUsers(address pool, address user, uint256 pid, uint256 nextPid);
+    event SetName(address pool, string name);
+    event SetDescribe(address pool, string describe);
+    event Setwebsite(address pool, string website);
+    event SetMinDepositAmount(address pool, uint256 amount);
 
     event UnstakeAndRedeemGlp(
         address pool, 
@@ -69,8 +83,29 @@ contract PoolDataV2 is Synchron, IStruct, ITransferAmountData {
         uint256 glpAmount, 
         uint256 amount,
         uint256 fee1,
-        uint256 fee2
+        uint256 fee2,
+        ProfitAmount[] _profitAmount,
+        uint256 rAmount,
+        uint256 userAmount
     );
+
+    event TransferProfit(
+        address from,
+        address to,
+        address pool,
+        uint256 pid,
+        uint256 amount,
+        TransferAmountData tData
+    ); 
+
+    event TransferRisk(
+        address from,
+        address to,
+        address pool,
+        uint256 pid,
+        uint256 amount,
+        TransferAmountData tData
+    ); 
 
     modifier onlyGov() {
         require(gov == msg.sender, "gov err");
@@ -102,6 +137,10 @@ contract PoolDataV2 is Synchron, IStruct, ITransferAmountData {
         glpRewardRouter = glpRewardRouter_;
         feeBonus = feeBonus_;
         vault = vault_;
+    }
+
+    function setRisk(address risk_) external onlyGov {
+        risk = IRisk(risk_);
     }
 
     function initialize(
@@ -139,18 +178,24 @@ contract PoolDataV2 is Synchron, IStruct, ITransferAmountData {
         errContractV2.validateSet(msg.sender, pool);
 
         txInfo[pool].name = name_;
+        emit SetName(pool, name_);
     }
 
-    function setDescribe(address pool, string memory describe_) external {
+
+    function setDescribe(address pool, string memory _describe) external {
         errContractV2.validateSet(msg.sender, pool);  
 
-        txInfo[pool].describe = describe_;
+        txInfo[pool].describe = _describe;
+        emit SetDescribe(pool, _describe);
     }
+
 
     function setwebsite(address pool, string memory website_) external {
         errContractV2.validateSet(msg.sender, pool);
 
         txInfo[pool].website = website_;
+
+        emit Setwebsite(pool, website_);
     }
 
     function setPeriodAmount(
@@ -165,6 +210,12 @@ contract PoolDataV2 is Synchron, IStruct, ITransferAmountData {
         emit SetPeriodAmount(pool, fundraisingAmount_);
     }
 
+    function setMinDepositAmount(address pool, uint256 amount) external {
+        errContractV2.validateSetMinDepositAmount(msg.sender, pool, amount);
+
+        txInfo[pool].minDepositAmount = amount;
+        emit SetMinDepositAmount(pool, amount);
+    }
 
     function setStartTime(address pool, uint256 pid, uint256 time) external {
         errContractV2.validateSetStartTime(msg.sender, pool, pid, time);
@@ -204,12 +255,6 @@ contract PoolDataV2 is Synchron, IStruct, ITransferAmountData {
         _setIsResubmit(user, pool, pid, isResubmit);
     }
 
-    function _setIsResubmit(address user, address pool, uint256 pid, bool isResubmit) internal {
-        userInfo[user][pool][pid].isResubmit = isResubmit;
-
-        emit SetIsResubmit(user, pool, pid, isResubmit);
-    }
-
     function deposit(
         address user, 
         address pool,
@@ -223,6 +268,7 @@ contract PoolDataV2 is Synchron, IStruct, ITransferAmountData {
         }
 
         foundState[pool][pid].actAmount = outAmount;
+
         _deposit(user, pool, pid, amount, value, isResubmit, false);
     } 
 
@@ -244,22 +290,79 @@ contract PoolDataV2 is Synchron, IStruct, ITransferAmountData {
         emit MintAndStakeGlp(pool, pid, foundState[pool][pid].depositAmount, glpAmount);
     }
 
+
     function unstakeAndRedeemGlp(
         address pool, 
         uint256 pid, 
         uint256 minOut
     ) external {
         errContractV2.valitadeUnstakeAndRedeemGlp(msg.sender, pool, pid);
-            
-        (uint256 fee1, uint256 fee2) = IFeeBonus(feeBonus).claimFeeAmount(vault);
         currPeriodID[pool] = 0;
         currPool = address(0);
         foundState[pool][pid].isClaim = true;
-        uint256 outAmount = IFundPoolV2(pool).unstakeAndRedeemGlp(poolToken[pool], foundState[pool][pid].glpAmount, minOut);
-        foundState[pool][pid].outAmount = outAmount ;
+
+        address token =  poolToken[pool];
+        uint256 riskAmount = risk.totalRiskDeposit(address(this), pool, token, pid);
+
+        (uint256 fee1, uint256 fee2) = IFeeBonus(feeBonus).claimFeeAmount(vault);
+        uint256 outAmount = IFundPoolV2(pool).unstakeAndRedeemGlp(token, foundState[pool][pid].glpAmount, minOut);
+        foundState[pool][pid].outAmount = outAmount;
         feeAmount[pool][pid] = fee1 + fee2;
 
-        emit UnstakeAndRedeemGlp(pool, pid, foundState[pool][pid].glpAmount, outAmount, fee1, fee2);    
+        uint256 dAmount =  foundState[pool][pid].depositAmount;
+
+        uint256 len = risk.getProfitDataLength();
+        ProfitAmount[] memory _profitAmount = new ProfitAmount[](len);
+        uint256 rAmount;
+
+        address _pool = pool;
+        uint256 _pid = pid;
+        address _token = token;
+        if(outAmount > dAmount) {
+            address _account = risk.profitAccount();
+
+            if(outAmount > dAmount + riskAmount) {
+                rAmount = riskAmount;
+                uint256 pAmount = outAmount - dAmount - riskAmount;
+                
+                uint256 _total;
+                if(len > 0) {
+                    for(uint256 i = 0; i < len; i++) {
+                        (address account, uint256 rate) = risk.profitData(i);
+                        uint256 _amount = pAmount * rate / baseRate;
+
+                        _total += _amount;
+                        _profitAmount[i] = ProfitAmount(account, _amount);
+                        _transferProfit(_pool, _token, account, _pid, _amount);
+                    }
+                }
+                profitClaimAmount[_pool][_pid] = _total;
+                
+                foundState[_pool][_pid].userAmount = outAmount - rAmount - _total;
+            } else {
+                rAmount = outAmount - dAmount;
+                foundState[_pool][_pid].userAmount = dAmount;
+            }
+
+            _transferRisk(_pool, token, _account, _pid, rAmount);
+        } else {
+            foundState[_pool][_pid].userAmount = outAmount;
+        }
+
+        riskClaimAmount[_pool][_pid] = rAmount;
+
+
+        emit UnstakeAndRedeemGlp(
+            pool, 
+            pid, 
+            foundState[_pool][_pid].glpAmount, 
+            outAmount, 
+            fee1, 
+            fee2,
+            _profitAmount,
+            rAmount,
+            foundState[_pool][_pid].userAmount
+        );    
     }
 
     function compoundToNext(address pool, uint256 pid, uint256 number) external {
@@ -268,13 +371,13 @@ contract PoolDataV2 is Synchron, IStruct, ITransferAmountData {
         }
 
         uint256 len = errContractV2.validateCompound(msg.sender, pool, pid, number);
-        uint256 nextPid = pid+1;
+        uint256 nextPid = pid + 1;
         uint256 compoundAmount = errContractV2.getCompoundAmountFormPrevious(pool, nextPid);
         if(!foundState[pool][nextPid].isGet) {
             foundState[pool][nextPid].isGet = true;
             if(compoundAmount == 0 || len == 0) {
                 foundState[pool][pid].isAllResubmit = true;
-                emit CompoundToNext(pool, address(0), pid, pid+1, true);
+                emit CompoundToNext(pool, address(0), pid, nextPid, true);
                 return;
             }
             foundState[pool][nextPid].needCompoundAmount = compoundAmount;
@@ -317,6 +420,44 @@ contract PoolDataV2 is Synchron, IStruct, ITransferAmountData {
         emit Claim(cEvent);
     }
 
+    function batchClaim(address user, address pool, uint256[] memory pid) external {
+        uint256 len = pid.length;
+        require(len > 0, "len err");
+        for(uint256 i = 0; i < len; i++) {
+            claim(user, pool, pid[i]);
+        }
+    }
+
+    function _setIsResubmit(address user, address pool, uint256 pid, bool isResubmit) internal {
+        userInfo[user][pool][pid].isResubmit = isResubmit;
+
+        emit SetIsResubmit(user, pool, pid, isResubmit);
+    }
+
+    function _transferProfit(
+        address pool,
+        address token, 
+        address account, 
+        uint256 pid,
+        uint256 amount
+    ) internal {
+        TransferAmountData memory tData = _safeTransfer(token, account, amount);
+
+        emit TransferProfit(address(this), account, pool, pid, amount, tData);
+    }
+
+    function _transferRisk(
+        address pool,
+        address token, 
+        address account, 
+        uint256 pid,
+        uint256 amount
+    ) internal {
+        TransferAmountData memory tData = _safeTransfer(token, account, amount);
+
+        emit TransferRisk(address(this), account, pool, pid, amount, tData);
+    }
+
     function _safeTransfer(
         address token, 
         address account, 
@@ -331,14 +472,6 @@ contract PoolDataV2 is Synchron, IStruct, ITransferAmountData {
         IERC20(token).safeTransfer(account, amount);
         tData.afterAmount = getAmount(token, address(this));
         tData.afterValue = getAmount(token, account);
-    }
-
-    function batchClaim(address user, address pool, uint256[] memory pid) external {
-        uint256 len = pid.length;
-        require(len > 0, "len err");
-        for(uint256 i = 0; i < len; i++) {
-            claim(user, pool, pid[i]);
-        }
     }
 
     function _depoitToNext(
@@ -620,11 +753,5 @@ contract PoolDataV2 is Synchron, IStruct, ITransferAmountData {
 
     function getAmount(address token, address account) public view returns(uint256) {
         return IERC20(token).balanceOf(account);
-    }
-
-    function setMinDepositAmount(address pool, uint256 amount) external {
-        errContractV2.validateSetMinDepositAmount(msg.sender, pool, amount);
-
-        txInfo[pool].minDepositAmount = amount;
     }
 }

@@ -3,18 +3,12 @@
 pragma solidity ^0.8.0;
 
 interface IReferralStorage {
-    
-    function zeroCode() external view returns (bytes32);
-    function owerCode(address account) external view returns (bytes32);
-    function codeOwners(bytes32 _code) external view returns (address);
-    function getTraderReferralInfo(address _account) external view returns (bytes32, address);
-    function setTraderReferralCode(address _account, bytes32 _code) external;
-
-    function getSecondaryAccountLength(address account) external view returns(uint256);
-
-    function getSecondaryAccount(address account, uint256 index) external view returns(address);
-
-    function getSecondaryAccountLength(address account, address user) external view returns(bool);
-
-    function referral(address account) external view returns (address);
+    function setGov(address _gov) external;
+    function setContract(address _invite) external;
+    function setHandler(address _handler, bool _isActive) external;
+    function ownerCode(address account) external view returns (string memory);
+    function codeOwners(string memory _code) external view returns (address);
+    function getPartnerAccountAccountLength(address account) external view returns(uint256);
+    function getPartnerAccountAccount(address account, uint256 index) external view returns(address);
+    function getPartnerAccountAccountIsIn(address account, address user) external view returns(bool);
 }

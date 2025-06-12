@@ -8,8 +8,12 @@ import "../../core/interfaces/IERC20Metadata.sol";
 import "./interfaces/IPoolDataV2.sol";
 import "../../core/interfaces/IVault.sol";
 import "../../Pendant/interfaces/IPhase.sol";
+import "./interfaces/IRisk.sol";
+import "../../referrals/interfaces/IFeeBonus.sol";
 
 contract FundReader is IStruct {
+    uint256 public constant baseRate = 10000;
+
     IVault public vault;
     IFundFactoryV2 public factoryV2;
 
@@ -72,6 +76,8 @@ contract FundReader is IStruct {
         
         return _amount *  (10 ** 18) /  deci;
     }
+
+
 
     function getOutAmount(address tokenOut, uint256 glpAmount) public view returns(uint256) {
         return phase.getOutAmount(tokenOut, tokenOut, glpAmount);
@@ -164,27 +170,10 @@ contract FundReader is IStruct {
             return fState.needCompoundAmount;
         }
 
-        FoundStateV2 memory fState1 = poolDataV2.getFoundState(pool, pid-1);
-        uint256 outAmount;
-        if(fState1.isClaim) {
-            outAmount = fState1.outAmount;
-        } else {
-            address token = poolDataV2.poolToken(pool);
-            outAmount = getOutAmount(token, fState1.glpAmount);
+        if(fState.currFundraisingAmount > fState.depositAmount) {
+            return fState.currFundraisingAmount - fState.depositAmount;
         }
-
-        uint256 fAmount = poolDataV2.getFundraisingAmount(pool, pid);
-        if(outAmount >= fState.depositAmount) {
-            if(outAmount > fAmount) {
-                return outAmount - fState.depositAmount;
-            }
-            return fAmount - fState.depositAmount;
-        } else {
-            if(fAmount > fState.depositAmount) {
-                return fAmount - fState.depositAmount;
-            }
-            return 0; 
-        }
+        return 0;
     }
 
     function getUserCompoundAmount(
@@ -222,6 +211,53 @@ contract FundReader is IStruct {
         } else {
             uint256 rLp = uInfo.lpAmount * remain / amount;
             return (remain, rLp, true);
+        }
+    }
+
+
+    function getOutAmountFor(address tokenOut, uint256 glpAmount) public view returns(uint256 userAmount) {
+        address pool = poolDataV2.currPool();
+        uint256 pid = poolDataV2.currPeriodID(pool);
+        if(pid == 0) {
+            return 0;
+        }
+
+        IRisk risk = IRisk(poolDataV2.risk());
+        address token = poolDataV2.poolToken(pool);
+        uint256 outAmount = phase.getOutAmount(tokenOut, tokenOut, glpAmount);
+        uint256 riskAmount = risk.totalRiskDeposit(address(this), pool, token, pid);
+        IFeeBonus feeBonus = IFeeBonus(poolDataV2.feeBonus());
+        uint256 fee1 = feeBonus.feeAmount(address(poolDataV2));
+        uint256 fee2 = feeBonus.phasefeeAmount(address(poolDataV2));
+
+        outAmount += (fee1 + fee2);
+
+        FoundStateV2 memory fState = poolDataV2.getFoundState(pool, pid);        
+
+        uint256 dAmount =  fState.depositAmount;
+        uint256 len = risk.getProfitDataLength();
+        uint256 rAmount;
+        if(outAmount > dAmount) {
+            if(outAmount > dAmount + riskAmount) {
+                rAmount = riskAmount;
+                uint256 pAmount = outAmount - dAmount - riskAmount;
+                
+                uint256 _total;
+                if(len > 0) {
+                    for(uint256 i = 0; i < len; i++) {
+                        (, uint256 rate) = risk.profitData(i);
+                        uint256 _amount = pAmount * rate / baseRate;
+
+                        _total += _amount;
+                    }
+                }
+               userAmount = outAmount - rAmount - _total;
+            } else {
+                userAmount = dAmount;
+            }
+
+        } else {
+            userAmount = outAmount;
         }
     }
 }
