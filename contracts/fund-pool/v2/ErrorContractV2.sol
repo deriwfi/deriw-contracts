@@ -285,7 +285,8 @@ contract ErrorContractV2 is IStruct {
         require(
             !fState.isAllResubmit &&
             number > 0 &&
-            block.timestamp >= fInfo1.endTime,
+            block.timestamp >= fInfo1.endTime &&
+            fState.isClaim,
             "compound err"
         );
 
