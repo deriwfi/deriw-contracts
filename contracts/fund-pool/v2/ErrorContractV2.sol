@@ -92,7 +92,7 @@ contract ErrorContractV2 is IStruct {
             "create err"
         );
         
-        require(id > 1, "pid err");
+        require(id >= 1, "pid err");
         FundInfoV2 memory fInfo1 = poolDataV2.getFoundInfo(pool, id);
         require(
             fundInfo_.startTime < fInfo1.lockEndTime && 
