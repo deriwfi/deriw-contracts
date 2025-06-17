@@ -134,7 +134,7 @@ contract Risk is Synchron, ITransferAmountData {
 
         uint256 index = ++riskIndex;
         uint256 pid = poolDataV2.currPeriodID(pool);
-        fundDepositData[index] = _deposit(msg.sender, pool, _indexToken, _collateralToken, pid, _amount);
+        riskDepositData[index] = _deposit(msg.sender, pool, _indexToken, _collateralToken, pid, _amount);
 
       
         totalRiskDeposit[address(poolDataV2)][pool][_collateralToken][pid] += _amount;
