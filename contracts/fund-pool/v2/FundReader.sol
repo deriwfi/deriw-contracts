@@ -225,7 +225,7 @@ contract FundReader is IStruct {
         IRisk risk = IRisk(poolDataV2.risk());
         address token = poolDataV2.poolToken(pool);
         uint256 outAmount = phase.getOutAmount(tokenOut, tokenOut, glpAmount);
-        uint256 riskAmount = risk.totalRiskDeposit(address(this), pool, token, pid);
+        uint256 riskAmount = risk.totalRiskDeposit(address(poolDataV2), pool, token, pid);
         IFeeBonus feeBonus = IFeeBonus(poolDataV2.feeBonus());
         uint256 fee1 = feeBonus.feeAmount(address(poolDataV2));
         uint256 fee2 = feeBonus.phasefeeAmount(address(poolDataV2));
