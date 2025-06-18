@@ -231,7 +231,6 @@ contract FundReader is IStruct {
         uint256 fee2 = feeBonus.phasefeeAmount(address(poolDataV2));
 
         outAmount += (fee1 + fee2);
-
         FoundStateV2 memory fState = poolDataV2.getFoundState(pool, pid);        
 
         uint256 dAmount =  fState.depositAmount;
