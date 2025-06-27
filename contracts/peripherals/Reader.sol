@@ -35,7 +35,7 @@ contract Reader is Governable {
     function getPairInfo(address _factory, address[] memory _tokens) public view returns (uint256[] memory) {
         uint256 inputLength = 2;
         uint256 propsLength = 2;
-        uint256[] memory amounts = new uint256[](_tokens.length / inputLength * propsLength);
+        uint256[] memory amounts = new uint256[](_tokens.length * propsLength / inputLength);
         for (uint256 i = 0; i < _tokens.length / inputLength; i++) {
             address token0 = _tokens[i * inputLength];
             address token1 = _tokens[i * inputLength + 1];

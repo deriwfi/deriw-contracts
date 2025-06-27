@@ -19,6 +19,7 @@ import "../Pendant/interfaces/IPhase.sol";
 contract Timelock is ITimelock, Ownable, IPhaseStruct {
     uint256 public constant MAX_BUFFER = 5 days;
     uint256 public constant MAX_LEVERAGE_VALIDATION = 500000; // 50x
+    uint256 public constant BASE_RATE = 10000;
 
     address public admin;
     address public glpManager;
@@ -75,6 +76,12 @@ contract Timelock is ITimelock, Ownable, IPhaseStruct {
         admin = _admin;
         buffer = _buffer;
         glpManager = _glpManager;
+        require(
+            _marginFeeBasisPoints < BASE_RATE && 
+            _maxMarginFeeBasisPoints < BASE_RATE && 
+            _marginFeeBasisPoints <= _maxMarginFeeBasisPoints,
+            "rate err"
+        );
         marginFeeBasisPoints = _marginFeeBasisPoints;
         maxMarginFeeBasisPoints = _maxMarginFeeBasisPoints;
     }
@@ -122,15 +129,18 @@ contract Timelock is ITimelock, Ownable, IPhaseStruct {
     }
 
     function setMarginFeeBasisPoints(uint256 _marginFeeBasisPoints, uint256 _maxMarginFeeBasisPoints) external onlyHandlerAndAbove {
+        require(
+            _marginFeeBasisPoints < BASE_RATE && 
+            _maxMarginFeeBasisPoints < BASE_RATE && 
+            _marginFeeBasisPoints <= _maxMarginFeeBasisPoints,
+            "rate err"
+        );
+        
         marginFeeBasisPoints = _marginFeeBasisPoints;
         maxMarginFeeBasisPoints = _maxMarginFeeBasisPoints;
     }
 
 
-
-    // assign _marginFeeBasisPoints to this.marginFeeBasisPoints
-    // because enableLeverage would update Vault.marginFeeBasisPoints to this.marginFeeBasisPoints
-    // and disableLeverage would reset the Vault.marginFeeBasisPoints to this.maxMarginFeeBasisPoints
     function setFees(
         address _vault,
         uint256 _marginFeeBasisPoints,

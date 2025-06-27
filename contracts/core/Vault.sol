@@ -622,7 +622,7 @@ contract Vault is Synchron, ReentrancyGuard, IEventStruct {
             address tokenFor = rtl._collateralToken;
             amountOutAfterFees = usdToTokenMin(tokenFor, usdOutAfterFee);
 
-            dt.amount = usdToTokenMin(tokenFor, usdOutAfterFee);
+            dt.amount = amountOutAfterFees;
 
             TransferAmountData memory tData = _transferOut(rtl._indexToken, tokenFor, amountOutAfterFees, rec);
             
@@ -1081,7 +1081,7 @@ contract Vault is Synchron, ReentrancyGuard, IEventStruct {
     function _increaseGlobalLongSize(address _indexToken, uint256 _amount) internal {
         globalLongSizes[_indexToken] += _amount;
 
-        uint256 maxSize = globalLongSizes[_indexToken];
+        uint256 maxSize = maxGlobalLongSizes[_indexToken];
         if (maxSize != 0) {
             require(globalLongSizes[_indexToken] <= maxSize, "long");
         }
@@ -1303,4 +1303,11 @@ contract Vault is Synchron, ReentrancyGuard, IEventStruct {
             return _tokenBalances[_indexToken][_collateralToken];
         }
     }
+
+    mapping (address => uint256) public maxGlobalLongSizes;
+    function setMaxGlobalLongSize(address _token, uint256 _amount) external {
+        _onlyGov();
+        maxGlobalLongSizes[_token] = _amount;
+    }
+
 }

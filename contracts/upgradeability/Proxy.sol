@@ -53,4 +53,11 @@ contract Proxy is Synchron{
         }
     }
 
+    function withdrawETH(address account, uint256 amount) external {
+        require(admin == msg.sender,"KnowhereProxy:not permit");
+        require(account != address(0), "account err");
+        require(address(this).balance >= amount, "amount err");
+
+        payable(account).transfer(amount);
+    }
 }

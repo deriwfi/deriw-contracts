@@ -62,7 +62,7 @@ contract Phase is Synchron, IStruct, IPhaseStruct {
     bool public initialized;
 
     mapping(address => uint256) public lastPrice;
-    mapping(address => bool) public hanlder;
+    mapping(address => bool) public handler;
     mapping(address => bool) public operator;
     mapping(uint8 => bytes32) public typeCode;
     mapping(bytes32 => uint8) public codeType;
@@ -75,7 +75,7 @@ contract Phase is Synchron, IStruct, IPhaseStruct {
 
 
     event SetTokenLeverageAndMaxSize(TokenData tData);
-    event SetHanlder(address account, bool isAdd);
+    event SetHandler(address account, bool isAdd);
     event SetOperator(address account, bool isAdd);
 
     event TransferTo(
@@ -175,10 +175,10 @@ contract Phase is Synchron, IStruct, IPhaseStruct {
         memeData = IMemeData(_memeData);
     }
 
-    function setHanlder(address account, bool isAdd) external onlyGov {
-        hanlder[account] = isAdd;
+    function setHandler(address account, bool isAdd) external onlyGov {
+        handler[account] = isAdd;
 
-        emit SetHanlder(account, isAdd);
+        emit SetHandler(account, isAdd);
     }
 
     function setOperator(address account, bool isAdd) external onlyGov {
@@ -188,7 +188,7 @@ contract Phase is Synchron, IStruct, IPhaseStruct {
     }
 
     function transferTo(address token, address account, uint256 amount) external {
-        require(msg.sender == gov || hanlder[msg.sender], "no permission");
+        require(msg.sender == gov || handler[msg.sender], "no permission");
 
         _transferTo(token, account, amount);
     } 
@@ -446,11 +446,11 @@ contract Phase is Synchron, IStruct, IPhaseStruct {
 
     function getIndextokenValue(address indexToken) public view returns(uint256) {
         uint256 rate = getCurrRate(indexToken);
-        uint256 totalAmount = vault.poolAmounts(indexToken, USDT) * rate / baseRate;
+        uint256 totalAmount = vault.poolAmounts(indexToken, USDT) * rate;
         uint256 price = vault.getMaxPrice(USDT);
         uint256 deciCounter = 10 ** IERC20Metadata(USDT).decimals();
 
-        return totalAmount * price / deciCounter;
+        return totalAmount * price / deciCounter / baseRate;
     }
 
     function getPoolRate(address pool) public view returns(uint256) {
@@ -477,20 +477,20 @@ contract Phase is Synchron, IStruct, IPhaseStruct {
                 if(globalLongAveragePrices == 0) {
                     longValue = 0;
                 } else {
-                    int256 maxPrice = int256(vault.getMaxPrice(indexToken));
-                    longValue = globalLongSizes  * (maxPrice - globalLongAveragePrices) / globalLongAveragePrices;
+                    int256 minPrice = int256(vault.getMinPrice(indexToken));
+                    longValue = globalLongSizes  * (minPrice - globalLongAveragePrices) / globalLongAveragePrices;
                 }
 
                 if(globalShortAveragePrices == 0) {
                     shortValue = 0;
                 } else {
-                    int256 minPrice = int256(vault.getMinPrice(indexToken));
-                    shortValue = -globalShortSizes * (minPrice - globalShortAveragePrices) / globalShortAveragePrices;
+                    int256 maxPrice = int256(vault.getMaxPrice(indexToken));
+                    shortValue = -globalShortSizes * (maxPrice - globalShortAveragePrices) / globalShortAveragePrices;
                 }
             } else {
                 (int256 maxPrice, int256 minPrice) = getPrice(indexToken);
-                longValue = globalLongSizes  * (maxPrice - globalLongAveragePrices) / globalLongAveragePrices;
-                shortValue = -globalShortSizes * (minPrice - globalShortAveragePrices) / globalShortAveragePrices;
+                longValue = globalLongSizes  * (minPrice - globalLongAveragePrices) / globalLongAveragePrices;
+                shortValue = -globalShortSizes * (maxPrice - globalShortAveragePrices) / globalShortAveragePrices;
             }
 
         } 
@@ -503,7 +503,7 @@ contract Phase is Synchron, IStruct, IPhaseStruct {
             uint256 len = coinData.getCoinsLength(pid, num);
 
             for(uint256 i = 0; i < len; i++) {
-                address token = coinData.getConin(pid, num, i);
+                address token = coinData.getCoin(pid, num, i);
                 (int256 _longValue, int256 _shortValue) = _getLongShortValue(token);
 
                 longValue += _longValue;
@@ -789,7 +789,7 @@ contract Phase is Synchron, IStruct, IPhaseStruct {
                             uint256 n = coinData.getCoinsLength(pid, num);
 
                             for(uint256 m = 0; m < n; m++) {
-                                address token = coinData.getConin(pid, num, m);
+                                address token = coinData.getCoin(pid, num, m);
                                 (int256 _longValue, int256 _shortValue) = _getLongShortValue(token);
                                 totalValue += (_longValue + _shortValue);
                             } 
@@ -824,7 +824,7 @@ contract Phase is Synchron, IStruct, IPhaseStruct {
     }
 
     function calculatePrice(address _indexToken, address _token) external {
-        require(hanlder[msg.sender], "no permission");
+        require(handler[msg.sender], "no permission");
         uint256 total =  ISlippage(vault.slippage()).glpTokenSupply(_indexToken, _token);
         if(total == 0) {
             return;

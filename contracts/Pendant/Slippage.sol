@@ -131,7 +131,7 @@ contract Slippage is  Synchron, IEventStruct {
     }
 
     function setDecreaseFeeRate(uint256 rate_) external onlyGov {
-        require(rate_ <= baseRate, "rate_ err");
+        require(rate_ < baseRate, "rate_ err");
         decreaseFeeRate = rate_;
     }
 

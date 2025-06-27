@@ -105,7 +105,8 @@ contract UserL2ToL3Router is Synchron {
         chainType = _cType;
         addOremoveWhitelist(tokens, true);
 
-        if(chainType == 1) {
+
+        if(chainType == 1 || chainType == 2) {
             if(_mFee.length > 0) {
                 setMinTokenFee(_mFee);
             }
@@ -217,17 +218,15 @@ contract UserL2ToL3Router is Synchron {
 
     function claimFee(address token, address account, uint256 amount) external onlyGov() {
         require(account != address(0), "account err");
-
-        if(token == address(0)) {
-            payable(account).transfer(amount);
-        } else {
-            require(
-                IERC20(token).balanceOf(address(this)) >= amount &&
-                tokenFee[token] >= amount, 
-                "amount err"
-            );
-            IERC20(token).safeTransfer(account, amount);
-        }
+        require(token != address(0), "token err");
+  
+        require(
+            IERC20(token).balanceOf(address(this)) >= amount &&
+            tokenFee[token] >= amount, 
+            "amount err"
+        );
+        IERC20(token).safeTransfer(account, amount);
+        
 
         tokenFee[token] -= amount;
         emit ClaimFee(token, account, amount);
@@ -399,5 +398,12 @@ contract UserL2ToL3Router is Synchron {
     function getTokenFeeData(address token) external view returns(uint256 rate, uint256 value) {
         rate = isSetRate[token] ? tokenRate[token] : feeRate;
         value =  minTokenFee[token];
+    }
+
+    function withdrawETH(address account, uint256 amount) external onlyGov() {
+        require(account != address(0), "account err");
+        require(address(this).balance >= amount, "amount err");
+
+        payable(account).transfer(amount);
     }
 }

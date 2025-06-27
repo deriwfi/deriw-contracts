@@ -279,6 +279,13 @@ contract OrderBook is Synchron, ReentrancyGuard, IOStruct, IOrderStruct {
         IPhase(IVault(vault).phase()).validateSizeDelta(msg.sender, _indexToken, _sizeDelta, _isLong);
 
         (address _purchaseToken, uint256 _purchaseTokenAmount) = _purchase(_path, _amountIn);
+
+        (, uint256 collateral,,,,,,) = IVault(vault).getPosition(msg.sender, _collateralToken, _indexToken, _isLong);
+        if(collateral == 0) {
+            uint256 _purchaseTokenAmountUsd = IVault(vault).tokenToUsdMin(_purchaseToken, _purchaseTokenAmount);
+            require(_purchaseTokenAmountUsd >= minPurchaseTokenAmountUsd, "OrderBook: insufficient collateral");
+        }
+
         uint256 _orderIndex = _createIncreaseOrder(
             _purchaseToken,
             _purchaseTokenAmount,
@@ -587,14 +594,8 @@ contract OrderBook is Synchron, ReentrancyGuard, IOStruct, IOrderStruct {
 
         if (_path.length > 1) {
             require(_path[0] == _purchaseToken, "OrderBook: invalid _path");
-        } else {
-            _purchaseTokenAmount = _amountIn;
-        }
-
-        {
-            uint256 _purchaseTokenAmountUsd = IVault(vault).tokenToUsdMin(_purchaseToken, _purchaseTokenAmount);
-            require(_purchaseTokenAmountUsd >= minPurchaseTokenAmountUsd, "OrderBook: insufficient collateral");
-        }
+        } 
+        _purchaseTokenAmount = _amountIn;
     }
 
     function _createIncreaseOrder(
@@ -826,3 +827,4 @@ contract OrderBook is Synchron, ReentrancyGuard, IOStruct, IOrderStruct {
         );
     }
 }
+

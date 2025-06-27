@@ -22,7 +22,7 @@ interface ICoinData is IPhaseStruct {
     );
     function getCoinsLength(uint256 pid, uint256 num) external view returns(uint256);
 
-    function getConin(uint256 pid, uint256 num, uint256 index) external view returns(address);
+    function getCoin(uint256 pid, uint256 num, uint256 index) external view returns(address);
 
     function isAddCoin(address token) external view returns(bool);  
 

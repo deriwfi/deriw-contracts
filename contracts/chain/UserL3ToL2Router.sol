@@ -11,6 +11,7 @@ import "./interfaces/IL1GatewayRouter.sol";
 import "../upgradeability/Synchron.sol";
 import "./interfaces/IArbSys.sol";
 
+
 pragma solidity ^0.8.0;
 
 contract UserL3ToL2Router is Synchron {
@@ -40,7 +41,7 @@ contract UserL3ToL2Router is Synchron {
 
     bytes32 private constant Dex_Transaction_Withdraw =
         keccak256(
-            "DexTransaction:Withdraw(string Transaction_Type,address Destination,string Amount,uint256 Deadline,string Chain)"
+            "DexTransaction:Withdraw(string Transaction_Type,address Token,address L2Token,address Destination,uint256 Amount,uint256 Deadline,string Chain)"
         );
 
     mapping(address => mapping(uint256 => TransferData)) transferData;
@@ -83,8 +84,10 @@ contract UserL3ToL2Router is Synchron {
 
     struct Message {
         string transactionType;
+        address token;
+        address l2Token;
         address destination;      
-        string amount;     
+        uint256 amount;     
         uint256 deadline;        
         string chain;   
     }
@@ -131,7 +134,7 @@ contract UserL3ToL2Router is Synchron {
 
         addOremoveWhitelist(tokens, true);
 
-        if(chainType == 1) {
+        if(chainType == 1 || chainType == 2) {
             if(_mFee.length > 0) {
                 setMinTokenFee(_mFee);
             }
@@ -143,33 +146,36 @@ contract UserL3ToL2Router is Synchron {
     }
 
     function outboundTransfer(
-        address _token,
-        address _l2Token,
-        address _to,
-        uint256 _amount,
         bytes calldata _data,
         EIP712Domain memory domain,
         Message memory message,
         bytes memory signature
     ) external payable {
-        require(whitelistToken.contains(_token), "token err");
+        require(whitelistToken.contains(message.token), "token err");
         require(block.timestamp <= message.deadline, "time err");
 
         (address user, bytes32 digest) = getSignatureUser(domain, message, signature);
         require(msg.sender == user && !isHashUse[digest], "signature err");
+
         isHashUse[digest] = true;
+
+        address _token = message.token;
+        address _l2Token = message.l2Token;
+        address _to = message.destination;
+        uint256 _amount = message.amount;
 
         IERC20(_token).safeTransferFrom(msg.sender, address(this), _amount);
         uint256 _fee;
 
         (_fee, _amount) = _addFee(_token, _amount);
 
+        bytes calldata _dataVale = _data; 
         IERC20(_token).approve(address(gatewayRouter), _amount);
         gatewayRouter.outboundTransfer{ value: msg.value }(
                 _l2Token,
                 _to,
                 _amount,
-                _data
+                _dataVale
         );
         _outboundTransfer(_token, _l2Token, _to, _amount, _fee);
         
@@ -371,8 +377,10 @@ contract UserL3ToL2Router is Synchron {
             abi.encode(
                 Dex_Transaction_Withdraw,
                 keccak256(bytes(message.transactionType)),
+                message.token,
+                message.l2Token,
                 message.destination,
-                keccak256(bytes(message.amount)),
+                message.amount,
                 message.deadline,
                 keccak256(bytes(message.chain))
             )
@@ -423,5 +431,12 @@ contract UserL3ToL2Router is Synchron {
     function getTokenFeeData(address token) external view returns(uint256 rate, uint256 value) {
         rate = isSetRate[token] ? tokenRate[token] : feeRate;
         value =  minTokenFee[token];
+    }
+
+    function withdrawETH(address account, uint256 amount) external onlyGov() {
+        require(account != address(0), "account err");
+        require(address(this).balance >= amount, "amount err");
+
+        payable(account).transfer(amount);
     }
 }

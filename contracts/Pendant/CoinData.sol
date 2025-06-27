@@ -167,6 +167,10 @@ contract CoinData is Synchron, IStruct, IPhaseStruct {
                 }
             }
 
+            if(!periodToken[id][num].contains(token)) {
+                lastTime[token] = block.timestamp;
+            }
+
             if(periodToken[id][num1].contains(token)) {
                 revert("has set");
             }
@@ -193,7 +197,7 @@ contract CoinData is Synchron, IStruct, IPhaseStruct {
 
         periodAddNum[id] = num1;
 
-        emit SetData(id, num, _tokenBase, _coinRate);
+        emit SetData(id, num1, _tokenBase, _coinRate);
     }
 
     function _createNewPeriodTokenBase(
@@ -297,7 +301,7 @@ contract CoinData is Synchron, IStruct, IPhaseStruct {
         return coins[pid][num].length();
     }
 
-    function getConin(uint256 pid, uint256 num, uint256 index) external view returns(address) {
+    function getCoin(uint256 pid, uint256 num, uint256 index) external view returns(address) {
         return coins[pid][num].at(index);
     }
 

@@ -53,8 +53,8 @@ contract FeeBonus is Synchron {
         uint256 afterValue
     );
 
-    event ClaimFeeAmount(address hanlder, address account, uint256 fee1, uint256 fee2);
-    event ClaimMemeFeeAmount(address hanlder, address account, uint256 fee);
+    event ClaimFeeAmount(address handler, address account, uint256 fee1, uint256 fee2);
+    event ClaimMemeFeeAmount(address handler, address account, uint256 fee);
 
 
     modifier onlyGov() {

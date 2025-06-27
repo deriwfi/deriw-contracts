@@ -18,6 +18,7 @@ import "../referrals/interfaces/IReferralData.sol";
 import "./interfaces/ITransferAmountData.sol";
 import "../upgradeability/Synchron.sol";
 
+
 contract PositionRouter is Synchron, ReentrancyGuard, ITransferAmountData {
     using Address for address;
     using SafeERC20 for IERC20;
@@ -303,6 +304,8 @@ contract PositionRouter is Synchron, ReentrancyGuard, ITransferAmountData {
     }
 
     function setDepositFee(uint256 _depositFee) external onlyAdmin {
+        require(_depositFee < BASIS_POINTS_DIVISOR, "rate_ err");
+
         depositFee = _depositFee;
 
         emit SetDepositFee(_depositFee);
@@ -357,14 +360,20 @@ contract PositionRouter is Synchron, ReentrancyGuard, ITransferAmountData {
         require(!blackList.isFusing(), "has fusing");
         uint256 len = _path.length;
         require(len == 1 || len == 2, "408");
+        address _pToken = _path[0];
         if(len == 1) {
-            require(usdt == _path[0], "_path[0] err");
+            require(usdt == _pToken, "_path[0] err");
         } else if(len == 2) {
-            require(usdt == _path[1] && usdt == _path[0], "_path[1] err");
+            require(usdt == _path[1] && usdt == _pToken, "_path[1] err");
         } else {
             revert("len err");
         }
-        
+
+        (, uint256 collateral,,,,,,) = IVault(vault).getPosition(msg.sender, usdt, _indexToken, _isLong);
+        if(collateral == 0) {
+            require(_amountIn >= minAmount, "_amountIn err");
+        }
+
         ISlippage(IVault(vault).slippage()).validateLever(msg.sender, usdt, _indexToken, _amountIn, _sizeDelta, _isLong);
         phase.validateSizeDelta(msg.sender, _indexToken, _sizeDelta, _isLong);
 
@@ -380,15 +389,16 @@ contract PositionRouter is Synchron, ReentrancyGuard, ITransferAmountData {
             _callbackTarget
         );
 
-        if (_amountIn > 0) {
-            uint256 beforeAmount = getAmount(_path[0], address(this));
-            uint256 beforeValue = getAmount(_path[0], msg.sender);
-            IRouter(router).pluginTransfer(_path[0], msg.sender, address(this), _amountIn);
-            uint256 afterAmount = getAmount(_path[0], address(this));
-            uint256 afterValue = getAmount(_path[0], msg.sender);
+        uint256 _value = _amountIn;
+        if (_value > 0) {
+            uint256 beforeAmount = getAmount(_pToken, address(this));
+            uint256 beforeValue = getAmount(_pToken, msg.sender);
+            IRouter(router).pluginTransfer(_pToken, msg.sender, address(this), _value);
+            uint256 afterAmount = getAmount(_pToken, address(this));
+            uint256 afterValue = getAmount(_pToken, msg.sender);
 
             IncreaseTransferEvent memory iEvent = IncreaseTransferEvent(
-                key, msg.sender, address(this), _amountIn, beforeAmount, afterAmount, beforeValue, afterValue
+                key, msg.sender, address(this), _value, beforeAmount, afterAmount, beforeValue, afterValue
             );
             emit CreateIncreaseTransferEvent(iEvent);
         }
@@ -1083,5 +1093,15 @@ contract PositionRouter is Synchron, ReentrancyGuard, ITransferAmountData {
         }
 
         return false;
+    }
+
+    uint256 public minAmount;
+    event SetMinAmount(uint256 _minAmount);
+    function setMinAmount(uint256 _minAmount) external onlyAdmin {
+        require(_minAmount > 0, "_minAmount err");
+
+        minAmount = _minAmount;
+
+        emit SetMinAmount(_minAmount);
     }
 }

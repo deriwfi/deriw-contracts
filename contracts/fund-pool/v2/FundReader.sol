@@ -141,8 +141,7 @@ contract FundReader is IStruct {
         if(isNext) {
             FoundStateV2 memory fState = poolDataV2.getFoundState(pool, pid);
             if(fState.depositAmount > 0) {
-                uint256 price = 1e18 * (fState.totalLpAmount * deci) / (deciCounter * fState.depositAmount);
-                return amount * deciCounter * price / deci  / 1e18;
+                return (amount * fState.totalLpAmount) / fState.depositAmount;
             } else {
                 return amount * deciCounter / deci;
             }
@@ -231,6 +230,7 @@ contract FundReader is IStruct {
         uint256 fee2 = feeBonus.phasefeeAmount(address(poolDataV2));
 
         outAmount += (fee1 + fee2);
+
         FoundStateV2 memory fState = poolDataV2.getFoundState(pool, pid);        
 
         uint256 dAmount =  fState.depositAmount;

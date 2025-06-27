@@ -4,12 +4,14 @@ import "@openzeppelin/contracts/utils/cryptography/ECDSA.sol";
 
 import "../upgradeability/Synchron.sol";
 
+
 pragma solidity ^0.8.0;
 
 contract TokenHelper is Synchron {
     using SafeERC20 for IERC20;
     using ECDSA for bytes32;
 
+    address public gov;
     bool public initialized;
 
     bytes32 private constant EIP712_DOMAIN_TYPE_HASH =
@@ -19,7 +21,7 @@ contract TokenHelper is Synchron {
 
     bytes32 private constant Dex_Transaction_TransferFrom =
         keccak256(
-            "DexTransaction:TransferFrom(string Transaction_Type,address Token,address From,address Destination,string Amount,uint256 Deadline,string Chain)"
+            "DexTransaction:TransferFrom(string Transaction_Type,address Token,address From,address Destination,uint256 Amount,uint256 Deadline,string Chain)"
         );
 
     mapping(bytes32 => bool) public isHashUse;
@@ -36,7 +38,7 @@ contract TokenHelper is Synchron {
         address token;
         address from;
         address destination;      
-        string amount;     
+        uint256 amount;     
         uint256 deadline;        
         string chain;   
     }
@@ -48,26 +50,40 @@ contract TokenHelper is Synchron {
         uint256 amount
     );
     
+    modifier onlyGov() {
+        require(msg.sender == gov, "no permission");
+        _;
+    }
+
     function initialize() external {
         require(!initialized, "has initialized");
         initialized = true;
+
+        gov = msg.sender;
+    }
+
+    function setGov(address _gov) external onlyGov {
+        require(_gov != address(0), "account err");
+        gov = _gov;
     }
 
     function transferFrom(
-        address token,
-        address from,
-        address to,
-        uint256 amount,
         EIP712Domain memory domain,
         Message memory message,
         bytes memory signature
     ) external payable {
+        uint256 amount= message.amount;
+        address to = message.destination;
         require(
             block.timestamp <= message.deadline &&
             to != address(0) &&
             amount > 0, 
             "data err"
         );
+
+        address token = message.token;
+        address from = message.from;
+
 
         (address user, bytes32 digest) = getSignatureUser(domain, message, signature);
         require(msg.sender == user && !isHashUse[digest], "signature err");
@@ -116,7 +132,7 @@ contract TokenHelper is Synchron {
                 message.token,
                 message.from,
                 message.destination,
-                keccak256(bytes(message.amount)),
+                message.amount,
                 message.deadline,
                 keccak256(bytes(message.chain))
             )
@@ -145,5 +161,12 @@ contract TokenHelper is Synchron {
         } else {
             return account.balance;
         }
+    }
+
+    function withdrawETH(address account, uint256 amount) external onlyGov() {
+        require(account != address(0), "account err");
+        require(address(this).balance >= amount, "amount err");
+
+        payable(account).transfer(amount);
     }
 }
