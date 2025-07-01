@@ -67,8 +67,6 @@ interface IPhase is IPhaseStruct {
 
     function setVault(address valut_) external;
 
-    function setHanlder(address account, bool isAdd) external;
-
     function setOperator(address account, bool isAdd) external;
 
     function transferTo(address token, address account, uint256 amount) external;
