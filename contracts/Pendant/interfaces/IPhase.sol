@@ -52,7 +52,7 @@ interface IPhase is IPhaseStruct {
         uint256 _lastIncreasedTime
     ) external view returns (bool, uint256);
 
-    function validateTokens(address _collateralToken, address _indexToken, bool _isLong) external view;
+    function validateTokens(address _collateralToken, address _indexToken) external view;
 
     function getValue(address user, address indexToken, bool isLong) external view returns(uint256);
     function validateSizeDelta(address user, address indexToken, uint256 sizeDelta, bool isLong) external view returns(bool);

@@ -128,7 +128,7 @@ contract MemeData is Synchron, IMemeStruct {
         memeState[pool].totalGlpAmount += glpAmount;
         memeUserInfo[pool][user].glpAmount += glpAmount;
 
-        emit Deposit(dEvent, isStake);
+        emit Deposit(dEvent, memeState[pool].isStake);
     }
 
     function claim(address user, address pool, uint256 glpAmount) external {

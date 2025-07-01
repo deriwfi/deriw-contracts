@@ -359,7 +359,7 @@ contract Vault is Synchron, ReentrancyGuard, IEventStruct {
 
         _validate(isLeverageEnabled, 28);
         _validateRouter();
-        phase.validateTokens(_collateralToken, _indexToken, _isLong);
+        phase.validateTokens(_collateralToken, _indexToken);
 
         vaultUtils.validateIncreasePosition(_account, _collateralToken, _indexToken, _sizeDelta, _isLong);
 

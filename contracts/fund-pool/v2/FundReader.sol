@@ -71,10 +71,8 @@ contract FundReader is IStruct {
         uint256 price = getPrice(token);
 
         uint256 deci = 10 ** IERC20Metadata(token).decimals();
-
-        uint256 _amount =  amount * price / 1e30;
         
-        return _amount *  (10 ** 18) /  deci;
+        return  amount * price /  deci / 1e12;
     }
 
 

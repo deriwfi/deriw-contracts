@@ -692,9 +692,7 @@ contract Phase is Synchron, IStruct, IPhaseStruct {
         return (hasProfit, delta);
     }
 
-    function validateTokens(address _collateralToken, address _indexToken, bool _isLong) external view {
-        require(_isLong || !_isLong, "long");
-
+    function validateTokens(address _collateralToken, address _indexToken) external view {
         vault.validate(vault.whitelistedTokens(_collateralToken), 43);
         vault.validate(vault.whitelistedTokens(_indexToken), 45);
     }

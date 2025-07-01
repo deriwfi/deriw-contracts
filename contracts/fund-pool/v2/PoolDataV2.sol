@@ -463,10 +463,6 @@ contract PoolDataV2 is Synchron, IStruct, ITransferAmountData {
         address account, 
         uint256 amount
     ) internal returns(TransferAmountData memory tData)  {
-        uint256 balance = IERC20(token).balanceOf(address(this)) ;
-        if(amount > balance) {
-            amount = balance;
-        }
         tData.beforeAmount = getAmount(token, address(this));
         tData.beforeValue = getAmount(token, account);
         IERC20(token).safeTransfer(account, amount);
