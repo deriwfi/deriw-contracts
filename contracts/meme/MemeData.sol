@@ -109,11 +109,9 @@ contract MemeData is Synchron, IMemeStruct {
         dEvent.afterAmount = getAmount(usdt, user);
         dEvent.afterValue = getAmount(usdt, pool);
 
-        bool isStake;
         if(!memeState[pool].isStake) {
             if(memeState[pool].totalDepositAmount >= initMinAmount) {
                 memeState[pool].isStake = true;
-                isStake = true;
                 startTime[pool] = block.timestamp;
                 startUser[pool] = user;
 
