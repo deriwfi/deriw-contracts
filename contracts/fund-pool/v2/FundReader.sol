@@ -152,7 +152,7 @@ contract FundReader is IStruct {
             if(outAmount == 0) {
                 return amount * deciCounter / deci;
             }
-            return (amount * 1e18 * fState1.totalLpAmount) / (outAmount  *  deciCounter);
+            return amount * fState1.totalLpAmount / outAmount;
         } else {
             return amount * deciCounter / deci;
         }

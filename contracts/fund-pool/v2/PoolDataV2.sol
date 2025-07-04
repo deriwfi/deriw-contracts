@@ -114,6 +114,8 @@ contract PoolDataV2 is Synchron, IStruct, ITransferAmountData {
     
     function initializeFor(address lpToken_) external {
         require(!initialized, "has initialized");
+        require(lpToken_ != address(0), "addr err");
+
         initialized = true;
 
         lpToken = lpToken_;
@@ -132,6 +134,15 @@ contract PoolDataV2 is Synchron, IStruct, ITransferAmountData {
         address feeBonus_,
         address vault_
     ) external onlyGov {
+        require(
+            factoryV2_ != address(0) &&
+            errContractV2_ != address(0) &&
+            glpRewardRouter_ != address(0) &&
+            feeBonus_ != address(0) &&
+            vault_ != address(0),
+            "addr err"
+        );
+
         factoryV2 = IFundFactoryV2(factoryV2_);
         errContractV2 = IErrorContractV2(errContractV2_);
         glpRewardRouter = glpRewardRouter_;
@@ -140,6 +151,8 @@ contract PoolDataV2 is Synchron, IStruct, ITransferAmountData {
     }
 
     function setRisk(address risk_) external onlyGov {
+        require(risk_ != address(0), "risk_ err");
+
         risk = IRisk(risk_);
     }
 
@@ -150,6 +163,12 @@ contract PoolDataV2 is Synchron, IStruct, ITransferAmountData {
         FundInfoV2 memory fundInfo_
     ) external {
         require(!isInit[pool] && msg.sender == address(factoryV2), "init err");
+        require(
+            pool != address(0) &&
+            token != address(0),
+            "addr err"
+        );
+
         isInit[pool] = true;
         poolToken[pool] = token;
         tokenToPool[token] = pool;

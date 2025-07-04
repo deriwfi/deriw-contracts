@@ -51,6 +51,8 @@ contract ReferralStorage is Synchron {
     }
 
     function setHandler(address _handler, bool _isActive) external onlyGov {
+        require(_handler != address(0), "_handler err");
+
         isHandler[_handler] = _isActive;
         emit SetHandler(_handler, _isActive);
     }

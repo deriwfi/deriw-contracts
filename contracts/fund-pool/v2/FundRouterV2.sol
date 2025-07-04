@@ -47,6 +47,13 @@ contract FundRouterV2 is IStruct {
         address factory_,
         address poolData_
     ) external onlyGov {
+        require(
+            auth_ != address(0) &&
+            factory_ != address(0) &&
+            poolData_ != address(0),
+            "addr err"
+        );
+
         factoryV2 = IFundFactoryV2(factory_);
         authV2 = IAuthV2(auth_);
         poolDataV2 = IPoolDataV2(poolData_);

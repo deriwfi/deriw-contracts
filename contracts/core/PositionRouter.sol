@@ -283,6 +283,8 @@ contract PositionRouter is Synchron, ReentrancyGuard, ITransferAmountData {
     }
 
     function setAdmin(address _admin) external onlyGov {
+        require(_admin != address(0), "_admin err");
+
         adminFor = _admin;
         emit SetAdmin(_admin);
     }
@@ -295,6 +297,16 @@ contract PositionRouter is Synchron, ReentrancyGuard, ITransferAmountData {
         address _router,
         address _usdt
     ) external onlyGov {
+        require(
+            _phase != address(0) &&
+            _blackList != address(0) &&
+            _referralData != address(0) &&
+            _vault != address(0) &&
+            _router != address(0) &&
+            _usdt != address(0),
+            "addr err"
+        );
+
         phase = IPhase(_phase);   
         blackList = IBlackList(_blackList);
         referralData = IReferralData(_referralData);   
@@ -324,6 +336,8 @@ contract PositionRouter is Synchron, ReentrancyGuard, ITransferAmountData {
     } 
 
     function setPositionKeeper(address _account, bool _isActive) external onlyAdmin {
+        require(_account != address(0), "_account err");
+        
         isPositionKeeper[_account] = _isActive;
         emit SetPositionKeeper(_account, _isActive);
     }

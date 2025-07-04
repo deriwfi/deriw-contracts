@@ -22,6 +22,8 @@ contract ErrorContractV2 is IStruct {
     address public gov;
 
     constructor(address usdt_) {
+        require(usdt_ != address(0), "usdt_ err");
+
         usdt = usdt_;
         gov = msg.sender;
     }
@@ -42,6 +44,16 @@ contract ErrorContractV2 is IStruct {
         address router_,
         address foundReader_
     ) external onlyGov {
+        require(
+            auth_ != address(0) &&
+            factory_ != address(0) &&
+            poolData_ != address(0) &&
+            router_ != address(0) &&
+            foundReader_ != address(0),
+            "addr err"
+        );
+
+
         foundReader = IFundReader(foundReader_);
         foundRouterV2 = router_;
         factoryV2 = IFundFactoryV2(factory_);

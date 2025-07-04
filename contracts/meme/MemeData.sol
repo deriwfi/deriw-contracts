@@ -57,6 +57,7 @@ contract MemeData is Synchron, IMemeStruct {
 
     function createPool(address pool, address token) external {
         require(msg.sender == address(memeFactory), "init err");
+        require(pool != address(0), "pool err");
 
         isAddMeme[token] = true;
         isTokenCreate[token] = true;
@@ -66,6 +67,7 @@ contract MemeData is Synchron, IMemeStruct {
 
     function initialize(address usdt_) external {
         require(!initialized, "has initialized");
+        require(usdt_ != address(0), "usdt_ err");
 
         initialized = true;
         gov = msg.sender;
@@ -85,6 +87,14 @@ contract MemeData is Synchron, IMemeStruct {
         address glpRewardRouter_,
         address vault_
     ) external onlyGov {
+        require(
+            memeFactory_ != address(0) &&
+            errContract_ != address(0) &&
+            glpRewardRouter_ != address(0) &&
+            vault_ != address(0),
+            "addr err"
+        );
+
         memeFactory = IMemeFactory(memeFactory_);
         memeErrorContract = IMemeErrorContract(errContract_);
         glpRewardRouter = glpRewardRouter_;

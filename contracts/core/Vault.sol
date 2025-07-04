@@ -180,7 +180,7 @@ contract Vault is Synchron, ReentrancyGuard, IEventStruct {
         address _errorController
     ) external {
         _onlyGov();
-        require(_multiplier > 0, "_multiplier err");
+        require(_multiplier > 0, "mul err");
 
         router = _router;
         liquidationFeeUsd = _liquidationFeeUsd;
@@ -282,6 +282,10 @@ contract Vault is Synchron, ReentrancyGuard, IEventStruct {
         if (!whitelistedTokens[_token]) {
             allWhitelistedTokens.push(_token);
         }
+        
+        if(uint256(IERC20Metadata(_token).decimals()) != _tokenDecimals) {
+            revert();
+        }
 
         uint256 _totalTokenWeights = totalTokenWeights;
         _totalTokenWeights -= tokenWeights[_token];
@@ -335,13 +339,15 @@ contract Vault is Synchron, ReentrancyGuard, IEventStruct {
         // There are only two situations on this dex: 1 and 2
         if(getCoinType(_indexToken) == 1) {
             _poolAmounts[_collateralToken][_collateralToken] -= _amount;
+            emit DecreasePoolAmount(_collateralToken, _collateralToken, _amount);
         } else {
             _poolAmounts[_indexToken][_collateralToken] -= _amount;
+            emit DecreasePoolAmount(_indexToken, _collateralToken, _amount);
         }
 
         _transferOut(_indexToken, _collateralToken, _amount, _receiver);
 
-        emit DecreasePoolAmount(_indexToken, _collateralToken, _amount);
+
         emit TransferOut(_collateralToken, _receiver, _amount);
     }
 
@@ -354,7 +360,7 @@ contract Vault is Synchron, ReentrancyGuard, IEventStruct {
         bool _isLong,
         uint256 _amount
     ) external nonReentrant {
-        require(isFrom[_collateralToken] && _collateralToken == usdt, "_cToken err");
+        require(isFrom[_collateralToken] && _collateralToken == usdt, "token err");
         slippage.validateRemoveTime(_indexToken);
 
         _validate(isLeverageEnabled, 28);
@@ -640,27 +646,6 @@ contract Vault is Synchron, ReentrancyGuard, IEventStruct {
         emit DecreasePosition(dData, _collateralValue);
         delete dData;
         return amountOutAfterFees;
-    }
-
-    function _validateDecreasePosition(
-        address _account, 
-        address _collateralToken, 
-        address _indexToken, 
-        uint256 _collateralDelta,
-        uint256 _sizeDelta, 
-        bool _isLong, 
-        address _receiver
-    ) internal view returns(bytes32 key) {
-        vaultUtils.validateDecreasePosition(_account, _collateralToken, _indexToken, _collateralDelta, _sizeDelta, _isLong, _receiver);
-
-        key = getPositionKey(_account, _collateralToken, _indexToken, _isLong);
-        Position storage position = positions[key];
-        _validate(
-            position.size > 0 &&
-            position.size >= _sizeDelta &&
-            position.collateral >= _collateralDelta, 
-            31
-        );
     }
 
     function _liquidate() internal {
@@ -1008,10 +993,17 @@ contract Vault is Synchron, ReentrancyGuard, IEventStruct {
         // value == 2 Indicating that it is the indexToken set in the MemeFactory contract(meme token)
         // There are only two situations on this dex: 1 and 2
         if(getCoinType(_indexToken)== 1) {
+            if(_poolAmounts[_collateralToken][_collateralToken] < _amount) {
+                revert();
+            }
             _poolAmounts[_collateralToken][_collateralToken] -= _amount;
             _validate(_reservedAmounts[_collateralToken][_collateralToken] <= _poolAmounts[_collateralToken][_collateralToken]  * multiplier / 10000, 50);
             emit DecreasePoolAmount(_collateralToken, _collateralToken, _amount);
         } else {
+            if(_poolAmounts[_indexToken][_collateralToken] < _amount) {
+                revert();
+            }
+
             _poolAmounts[_indexToken][_collateralToken] -= _amount;
             _validate(_reservedAmounts[_indexToken][_collateralToken] <= _poolAmounts[_indexToken][_collateralToken]  * multiplier / 10000, 50);
             emit DecreasePoolAmount(_indexToken, _collateralToken, _amount);
@@ -1218,6 +1210,9 @@ contract Vault is Synchron, ReentrancyGuard, IEventStruct {
         if (usdOut > fee) {
             usdOutAfterFee = usdOut - fee;
         } else {
+            if(position.collateral < fee) {
+                revert();
+            }
             position.collateral -= fee;
         }
 

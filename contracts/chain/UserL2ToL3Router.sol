@@ -29,6 +29,7 @@ contract UserL2ToL3Router is Synchron {
 
     address public l2Usdt;
     address public gov;
+    address public feeReceiver;
 
     EnumerableSet.AddressSet whitelistToken;
     EnumerableSet.AddressSet removelistToken;
@@ -38,7 +39,6 @@ contract UserL2ToL3Router is Synchron {
     mapping(address => DepositInfo) totalDepositInfo;
     mapping(address => mapping(address => DepositInfo)) userDepositInfo;
     mapping(address => uint256) public minTokenFee;
-    mapping(address => uint256) public tokenFee;
     mapping(address => uint256) public tokenRate;
     mapping(address => bool) public isSetRate;
 
@@ -77,6 +77,7 @@ contract UserL2ToL3Router is Synchron {
 
     event AddWhitelist(address token);
     event RemoveWhitelist(address token); 
+    event TransferFee(address token, address to, uint256 fee);
 
     modifier onlyGov() {
         require(msg.sender == gov, "no permission");
@@ -88,19 +89,36 @@ contract UserL2ToL3Router is Synchron {
         address _l2Usdt,
         address _l2GatewayRouter,
         address _inbox,
+        address _feeReceiver,
         address[] memory tokens,
         MinTokenFee[] memory _mFee,
         MinTokenFee[] memory _mRate,
         uint8 _cType
     ) external {
         require(!initialized, "has initialized");
+
+        require(
+            _l2Usdt != address(0) &&
+            _l2GatewayRouter != address(0) &&
+            _inbox != address(0) &&
+            _feeReceiver != address(0),
+            "addr err"            
+        );
+
+        if(_cType == 1) {
+            require(_dCoin != address(0), "_dCoin err");
+            dCoin = IERC20(_dCoin);
+        }
+
+
         initialized = true;
 
         l2GatewayRouter = IL1GatewayRouter(_l2GatewayRouter);
         gov = msg.sender;
-        dCoin = IERC20(_dCoin);
+
         l2Usdt = _l2Usdt;
         inbox = _inbox;
+        feeReceiver = _feeReceiver;
 
         chainType = _cType;
         addOremoveWhitelist(tokens, true);
@@ -133,13 +151,16 @@ contract UserL2ToL3Router is Synchron {
         uint256 _gasPriceBid,
         bytes calldata _data
     ) external payable {
-
         require(whitelistToken.contains(_token), "token err");
         IERC20(_token).safeTransferFrom(msg.sender, address(this), _amount);
         uint256 _fee;
         address getWay = l2GatewayRouter.getGateway(_token);
         if(chainType == 1) {
             (_fee, _amount) = _addFee(getWay, _token, _amount);
+            if(_fee > 0) {
+                IERC20(_token).safeTransfer(feeReceiver, _fee);
+                emit TransferFee(_token, feeReceiver, _fee);
+            }
         } else if(chainType == 2) {
             _fee = 0;
         } else {
@@ -214,23 +235,12 @@ contract UserL2ToL3Router is Synchron {
     }
 
 
+    function setFeeReceiver(address _feeReceiver) external onlyGov() {
+        require(_feeReceiver != address(0), "_feeReceiver err");
 
-
-    function claimFee(address token, address account, uint256 amount) external onlyGov() {
-        require(account != address(0), "account err");
-        require(token != address(0), "token err");
-  
-        require(
-            IERC20(token).balanceOf(address(this)) >= amount &&
-            tokenFee[token] >= amount, 
-            "amount err"
-        );
-        IERC20(token).safeTransfer(account, amount);
-        
-
-        tokenFee[token] -= amount;
-        emit ClaimFee(token, account, amount);
+        feeReceiver = _feeReceiver;
     }
+
 
     function setFeeRate(uint256 _rate) external onlyGov() {
         require(_rate < BASERATE, "rate err");
@@ -274,6 +284,8 @@ contract UserL2ToL3Router is Synchron {
 
 
     function setContract(address _l2GatewayRouter) external onlyGov() {
+        require(_l2GatewayRouter != address(0), "addr err");
+
         l2GatewayRouter = IL1GatewayRouter(_l2GatewayRouter);
     }
 
@@ -287,7 +299,6 @@ contract UserL2ToL3Router is Synchron {
 
     function _addFee(address getWay, address _token,  uint256 _amount) internal returns(uint256, uint256) {
         uint256 _fee = getFee(_token, _amount);
-        tokenFee[_token] += _fee;
         _amount = _amount - _fee;
         dCoin.approve(address(l2GatewayRouter), 1e20);
         dCoin.approve(getWay, 1e20);

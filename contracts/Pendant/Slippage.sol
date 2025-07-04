@@ -82,6 +82,8 @@ contract Slippage is  Synchron, IEventStruct {
 
     function initialize(address usdt) external {
         require(!initialized, "has initialized");
+        require(usdt != address(0), "addr err");
+
         initialized = true;
         USDT = usdt;
         factor = 200;
@@ -102,6 +104,14 @@ contract Slippage is  Synchron, IEventStruct {
         address _vault,
         address _orderBook
     ) external onlyGov {
+        require(
+            _coinData != address(0) &&
+            _glpManager != address(0) &&
+            _vault != address(0) &&
+            _orderBook != address(0),
+            "addr err"
+        );
+
         coinData = ICoinData(_coinData);
         glpManager = _glpManager;
         vault = IVault(_vault);
@@ -131,7 +141,7 @@ contract Slippage is  Synchron, IEventStruct {
     }
 
     function setDecreaseFeeRate(uint256 rate_) external onlyGov {
-        require(rate_ < baseRate, "rate_ err");
+        require(rate_ <= 2000, "rate_ err");
         decreaseFeeRate = rate_;
     }
 
@@ -452,11 +462,9 @@ contract Slippage is  Synchron, IEventStruct {
         size += pos.collateral;
         _sizeDelta += pos.size;
 
-        (uint256 maxLeverage, , , bool isSet) = IPhase(vault.phase()).getTokenData(user);
-        if(isSet) {
-            require(_sizeDelta * baseRate / size <= maxLeverage, "big err");
-        }        
-
+        (uint256 maxLeverage, , ,) = IPhase(vault.phase()).getTokenData(user);
+        require(_sizeDelta * baseRate / size <= maxLeverage, "big err");
+        
         validateCreate(indexToken);
 
         return true;

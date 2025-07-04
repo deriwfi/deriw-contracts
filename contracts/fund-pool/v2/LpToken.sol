@@ -19,6 +19,8 @@ contract LpToken is ERC20 {
     }
 
     function mint(address account, uint256 amount) external {
+        require(account != address(0), "account err");
+
         require(minters[msg.sender], "!minter");
         _mint(account, amount);
     }
@@ -28,16 +30,20 @@ contract LpToken is ERC20 {
     }
   
     function setGovernance(address _governance) external {
+        require(_governance != address(0), "_governance err");
+
         require(msg.sender == governance, "!governance");
         governance = _governance;
     }
     
     function addMinter(address _minter) external {
+        require(_minter != address(0), "_minter err");
         require(msg.sender == governance, "!governance");
         minters[_minter] = true;
     }
     
     function removeMinter(address _minter) external {
+        require(_minter != address(0), "_minter err");
         require(msg.sender == governance, "!governance");
         minters[_minter] = false;
     }

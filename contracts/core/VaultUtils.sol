@@ -92,7 +92,9 @@ contract VaultUtils is IEventStruct, Governable {
             return (1, marginFees);
         }
 
-        if (remainingCollateral.mul(_vault.maxLeverage()) < position.size.mul(BASIS_POINTS_DIVISOR)) {
+
+        (uint256 maxLeverage,,,) = IPhase(vault.phase()).getTokenData(_account);
+        if (remainingCollateral.mul(maxLeverage) < position.size.mul(BASIS_POINTS_DIVISOR)) {
             if (_raise) { revert("Vault: maxLeverage exceeded"); }
             return (2, marginFees);
         }
@@ -170,9 +172,8 @@ contract VaultUtils is IEventStruct, Governable {
 
         if (isTokenSet) {
             require(userGlobalLongSizes[user] <= maxSize, " user total long err");
-
-            validate(user, token, indexToken, true, maxLeverage);   
         }
+        validate(user, token, indexToken, true, maxLeverage);   
     }
 
     function decreaseUserGlobalLongSize(address user, uint256 _amount) external onlyVault {
@@ -211,9 +212,8 @@ contract VaultUtils is IEventStruct, Governable {
 
         if (isTokenSet) {
             require(userGlobalShortSizes[user] <= maxShortSize, "user total shorts err");
-
-            validate(user, token, indexToken,  false, maxLeverage);
         }
+        validate(user, token, indexToken,  false, maxLeverage);
     }
 
     function validate(

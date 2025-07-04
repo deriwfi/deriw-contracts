@@ -11,7 +11,7 @@ import "./interfaces/IMemeData.sol";
 import "../core/interfaces/IERC20Metadata.sol";
 import "../upgradeability/Synchron.sol";
 
-contract MemeFactory is Synchron, MemePool, ReentrancyGuard {
+contract MemeFactory is Synchron, ReentrancyGuard {
     using EnumerableSet for EnumerableSet.AddressSet;
 
     event CreatePool(address creator, address pool, address token, string symbol);
@@ -42,7 +42,7 @@ contract MemeFactory is Synchron, MemePool, ReentrancyGuard {
     }
 
     modifier onlyAuth() {
-        require(gov == msg.sender || trader[msg.sender] == true, "no permission");
+        require(gov == msg.sender || trader[msg.sender], "no permission");
         _;
     }
 
@@ -60,10 +60,14 @@ contract MemeFactory is Synchron, MemePool, ReentrancyGuard {
     }
 
     function setTrader(address account, bool isAdd) external onlyGov {
+        require(account != address(0), "account err");
+
         trader[account] = isAdd;
     }
 
     function setOperator(address account, bool isAdd) external onlyAuth {
+        require(account != address(0), "account err");
+
         operator[account] = isAdd;
     }
 
@@ -72,6 +76,13 @@ contract MemeFactory is Synchron, MemePool, ReentrancyGuard {
         address memeData_,
         address coinData_
     ) external onlyAuth {
+        require(
+            errContract_ != address(0) &&
+            memeData_ != address(0) &&
+            coinData_ != address(0),
+            "addr err"
+        );
+
         memeData = IMemeData(memeData_);
         memeErrorContract = IMemeErrorContract(errContract_);
         coinData = coinData_;
@@ -105,6 +116,7 @@ contract MemeFactory is Synchron, MemePool, ReentrancyGuard {
     function _addWhitelist(address[] memory accounts) internal {
         for (uint256 i = 0; i < accounts.length; i++) {
             if(!Whitelist.contains(accounts[i])) {
+                require(accounts[i] != address(0), "account err");
                 Whitelist.add(accounts[i]);
                 removelist.remove(accounts[i]);
                 emit AddWhitelist(accounts[i]);
@@ -115,6 +127,7 @@ contract MemeFactory is Synchron, MemePool, ReentrancyGuard {
     function _removeWhitelist(address[] memory accounts) internal  {
         for (uint256 i = 0; i < accounts.length; i++) {
             if(Whitelist.contains(accounts[i])) {
+                require(accounts[i] != address(0), "account err");
                 Whitelist.remove(accounts[i]);
                 removelist.add(accounts[i]);
                 emit RemoveWhitelist(accounts[i]);

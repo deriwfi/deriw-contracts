@@ -70,6 +70,8 @@ contract Risk is Synchron, ITransferAmountData {
   
     function initialize(address _usdt) external {
         require(!initialized, "has initialized");
+        require(_usdt != address(0), "addr err");
+
         initialized = true;
 
         gov = msg.sender;
@@ -86,6 +88,13 @@ contract Risk is Synchron, ITransferAmountData {
         address _poolData,
         address _profitAccount
     ) external onlyAuth {
+        require(
+            _vault != address(0) &&
+            _poolData != address(0) &&
+            _profitAccount != address(0),
+            "addr err"
+        );
+
         vault = IVault(_vault);
         poolDataV2 = IPoolDataV2(_poolData);
         require(address(0) != _profitAccount, "_profitAccount err");
@@ -93,12 +102,16 @@ contract Risk is Synchron, ITransferAmountData {
     }
 
     function setAuth(address account, bool isAdd) external onlyGov {
+        require(account != address(0), "account err");
+
         adminFor[account] = isAdd;
 
         emit SetAuth(account, isAdd);
     }
 
     function setOperator(address account, bool isAdd) external onlyAuth {
+        require(account != address(0), "account err");
+
         operator[account] = isAdd;
 
         emit SetOperator(account, isAdd);
@@ -122,6 +135,8 @@ contract Risk is Synchron, ITransferAmountData {
     }
 
     function transferTo(address token, address account, uint256 amount) external onlyGov {
+        require(account != address(0), "account err");
+
         require(IERC20(token).balanceOf(address(this)) >= amount, "not enough");
         IERC20(token).safeTransfer(account, amount);
             

@@ -24,6 +24,8 @@ contract Router is IRouter {
     }
 
     constructor(address _vault) {
+        require(_vault != address(0), "addr err");
+
         vault = _vault;
         gov = msg.sender;
     }
@@ -34,10 +36,14 @@ contract Router is IRouter {
     }
 
     function addPlugin(address _plugin) external override onlyGov {
+        require(_plugin != address(0), "_plugin err");
+        
         plugins[_plugin] = true;
     }
 
     function removePlugin(address _plugin) external onlyGov {
+        require(_plugin != address(0), "_plugin err");
+
         plugins[_plugin] = false;
     }
 

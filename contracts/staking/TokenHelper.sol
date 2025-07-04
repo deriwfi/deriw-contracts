@@ -12,6 +12,8 @@ contract TokenHelper is Synchron {
     using ECDSA for bytes32;
 
     address public gov;
+
+    uint256 public chainid;
     bool public initialized;
 
     bytes32 private constant EIP712_DOMAIN_TYPE_HASH =
@@ -55,10 +57,11 @@ contract TokenHelper is Synchron {
         _;
     }
 
-    function initialize() external {
+    function initialize(uint256 _chainId) external {
         require(!initialized, "has initialized");
         initialized = true;
 
+        chainid = _chainId;
         gov = msg.sender;
     }
 
@@ -74,6 +77,7 @@ contract TokenHelper is Synchron {
     ) external payable {
         uint256 amount= message.amount;
         address to = message.destination;
+        require(domain.chainId == chainid && domain.verifyingContract == address(this), "para err");
         require(
             block.timestamp <= message.deadline &&
             to != address(0) &&
@@ -86,7 +90,8 @@ contract TokenHelper is Synchron {
 
 
         (address user, bytes32 digest) = getSignatureUser(domain, message, signature);
-        require(msg.sender == user && !isHashUse[digest], "signature err");
+
+        require(from == user && !isHashUse[digest], "signature err");
         isHashUse[digest] = true;
 
         if(token != address(0)) {

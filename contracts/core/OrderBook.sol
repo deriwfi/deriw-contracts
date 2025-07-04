@@ -232,6 +232,15 @@ contract OrderBook is Synchron, ReentrancyGuard, IOStruct, IOrderStruct {
         address _blackList,
         address _referralData
     ) external onlyGov {
+        require(
+            _router != address(0) &&
+            _vault != address(0) &&
+            _usdt != address(0) &&
+            _blackList != address(0) &&
+            _referralData != address(0),
+            "addr err"
+        );
+
         router = _router;
         vault = _vault;
         usdt = _usdt;
@@ -256,6 +265,8 @@ contract OrderBook is Synchron, ReentrancyGuard, IOStruct, IOrderStruct {
     }
 
     function setCancelAccount(address account) external onlyGov {
+        require(account != address(0), "account err");
+
         cancelAccount = account;
 
         emit SetCancelAccount(account);

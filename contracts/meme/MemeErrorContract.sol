@@ -25,6 +25,8 @@ contract MemeErrorContract is IMemeStruct {
     address public gov;
 
     constructor(address usdt_) {
+        require(usdt_ != address(0), "usdt_ err");
+
         usdt = usdt_;
         gov = msg.sender;
     }
@@ -47,6 +49,17 @@ contract MemeErrorContract is IMemeStruct {
         address phase_,
         address foundReader_
     ) external onlyGov {
+        require(
+            memeFactory_ != address(0) &&
+            memeData_ != address(0) &&
+            memeRouter_ != address(0) &&
+            vault_ != address(0) &&
+            coinData_ != address(0) &&
+            phase_ != address(0) &&
+            foundReader_ != address(0),
+            "addr err"
+        );
+
         memeRouter = memeRouter_;
         memeFactory = IMemeFactory(memeFactory_);
         memeData = IMemeData(memeData_);

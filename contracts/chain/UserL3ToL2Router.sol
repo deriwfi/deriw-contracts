@@ -21,12 +21,14 @@ contract UserL3ToL2Router is Synchron {
 
     uint256 public constant BASERATE = 10000;
     uint256 public feeRate;
+    uint256 public chainid;
     uint8 public chainType;
 
     bool public initialized;
 
     address public gov;
     address public l3Usdt;
+    address public feeReceiver;
 
     IArbSys public arbSys;
     IL1GatewayRouter public gatewayRouter;
@@ -41,7 +43,7 @@ contract UserL3ToL2Router is Synchron {
 
     bytes32 private constant Dex_Transaction_Withdraw =
         keccak256(
-            "DexTransaction:Withdraw(string Transaction_Type,address Token,address L2Token,address Destination,uint256 Amount,uint256 Deadline,string Chain)"
+            "DexTransaction:Withdraw(string Transaction_Type,address From,address Token,address L2Token,address Destination,uint256 Amount,uint256 Deadline,string Chain)"
         );
 
     mapping(address => mapping(uint256 => TransferData)) transferData;
@@ -49,7 +51,6 @@ contract UserL3ToL2Router is Synchron {
     mapping(address => DepositInfo) totalDepositInfo;
     mapping(address => mapping(address => DepositInfo)) public userDepositInfo;
     mapping(address => uint256) public minTokenFee;
-    mapping(address => uint256) public tokenFee;
     mapping(bytes32 => bool) public isHashUse;
 
     mapping(address => uint256) public tokenRate;
@@ -84,11 +85,12 @@ contract UserL3ToL2Router is Synchron {
 
     struct Message {
         string transactionType;
+        address from;
         address token;
         address l2Token;
         address destination;      
         uint256 amount;     
-        uint256 deadline;        
+        uint256 deadline;      
         string chain;   
     }
 
@@ -101,13 +103,13 @@ contract UserL3ToL2Router is Synchron {
     );
 
     event TransferTo(address indexed token, address indexed account, uint256 amount);
-    event ClaimFee(address token, address account, uint256 amount);
 
     event SetTokenRate(MinTokenFee[] mRate);
     event SetMinTokenFee(MinTokenFee[] mFee);
 
     event AddWhitelist(address token);
     event RemoveWhitelist(address token); 
+    event TransferFee(address token, address to, uint256 fee);
 
     modifier onlyGov() {
         require(msg.sender == gov, "no permission");
@@ -118,18 +120,30 @@ contract UserL3ToL2Router is Synchron {
         address _l3GatewayRouter,
         address _l3Usdt,
         address _arbSys,
+        address _feeReceiver,
         address[] memory tokens,
         MinTokenFee[] memory _mFee,
         MinTokenFee[] memory _mRate,
+        uint256 _chainid,
         uint8 _cType
     ) external {
         require(!initialized, "has initialized");
+        require(
+            _l3GatewayRouter != address(0) &&
+            _l3Usdt != address(0) &&
+            _arbSys != address(0) &&
+            _feeReceiver != address(0),
+            "addr err"            
+        );
 
         initialized = true;
         gatewayRouter = IL1GatewayRouter(_l3GatewayRouter);
         gov = msg.sender;
         l3Usdt = _l3Usdt;
         arbSys = IArbSys(_arbSys);
+        feeReceiver = _feeReceiver;
+        chainid = _chainid;
+
         chainType = _cType;
 
         addOremoveWhitelist(tokens, true);
@@ -153,9 +167,12 @@ contract UserL3ToL2Router is Synchron {
     ) external payable {
         require(whitelistToken.contains(message.token), "token err");
         require(block.timestamp <= message.deadline, "time err");
+        require(domain.chainId == chainid && domain.verifyingContract == address(this), "para err");
 
+
+        address from = message.from;
         (address user, bytes32 digest) = getSignatureUser(domain, message, signature);
-        require(msg.sender == user && !isHashUse[digest], "signature err");
+        require(from == user && !isHashUse[digest], "signature err");
 
         isHashUse[digest] = true;
 
@@ -164,10 +181,15 @@ contract UserL3ToL2Router is Synchron {
         address _to = message.destination;
         uint256 _amount = message.amount;
 
-        IERC20(_token).safeTransferFrom(msg.sender, address(this), _amount);
+        IERC20(_token).safeTransferFrom(from, address(this), _amount);
         uint256 _fee;
 
-        (_fee, _amount) = _addFee(_token, _amount);
+        (_fee, _amount) = getValue(_token, _amount);
+
+        if(_fee > 0) {
+            IERC20(_token).safeTransfer(feeReceiver, _fee);
+            emit TransferFee(_token, feeReceiver, _fee);
+        }
 
         bytes calldata _dataVale = _data; 
         IERC20(_token).approve(address(gatewayRouter), _amount);
@@ -182,33 +204,28 @@ contract UserL3ToL2Router is Synchron {
     }
 
     function withdrawEth(address destination) external payable {
-        (uint256 _fee, uint256 _amount) = _addFee(address(0), msg.value);
+        (uint256 _fee, uint256 _amount) = getValue(address(0), msg.value);
+        if(_fee > 0) {
+            payable(feeReceiver).transfer(_fee);
+            emit TransferFee(address(0), feeReceiver, _fee);
+        }
         
         arbSys.withdrawEth{ value: _amount }(destination);
 
         _outboundTransfer(address(0), address(0), destination, _amount, _fee);
     }
 
-    function claimFee(address token, address account, uint256 amount) external onlyGov() {
-        require(account != address(0), "account err");
-        if(token == address(0)) {
-            payable(account).transfer(amount);
-        } else {
-            require(
-                IERC20(token).balanceOf(address(this)) >= amount &&
-                tokenFee[token] >= amount
-                , "amount err"
-            );
-            IERC20(token).safeTransfer(account, amount);
-        }
 
-        tokenFee[token] -= amount;
 
-        emit ClaimFee(token, account, amount);
+    function setFeeReceiver(address _feeReceiver) external onlyGov() {
+        require(_feeReceiver != address(0), "_feeReceiver err");
+
+        feeReceiver = _feeReceiver;
     }
 
+
     function setFeeRate(uint256 _rate) external onlyGov() {
-        require(_rate< BASERATE, "rate err");
+        require(_rate < BASERATE, "rate err");
 
         feeRate = _rate;
     }
@@ -249,6 +266,8 @@ contract UserL3ToL2Router is Synchron {
     }
 
     function setContract(address l3GatewayRouter_) external onlyGov() {
+        require(l3GatewayRouter_ != address(0), "addr err");
+
         gatewayRouter = IL1GatewayRouter(l3GatewayRouter_);
     }
 
@@ -275,6 +294,7 @@ contract UserL3ToL2Router is Synchron {
         uint256 _fee
     ) internal {
         uint256 index = ++totalDepositInfo[_tokenFor].totalIndex;
+
         TransferData memory _tData = TransferData(
                 _tokenFor,
                 _l2TokenFor,
@@ -292,15 +312,6 @@ contract UserL3ToL2Router is Synchron {
         userDepositInfo[_tokenFor][msg.sender].totalAmount += _mAmount;
 
         emit L3ToL2RouterOutboundTransfer(_tokenFor, _l2TokenFor, index, uIndex, _tData);
-    }
-
-
-    function _addFee(address _token,  uint256 _amount) internal returns(uint256, uint256) {
-        uint256 _fee = _getFee(_token, _amount);
-        _amount = _amount - _fee;
-        tokenFee[_token] += _fee;
-
-        return(_fee, _amount);
     }
 
 
@@ -324,14 +335,17 @@ contract UserL3ToL2Router is Synchron {
         }
     }
 
-    function _getFee(address _token,  uint256 _amount) internal view returns(uint256) {
+
+    function getValue(address _token,  uint256 _amount) public view returns(uint256, uint256) {
         uint256 _rate = isSetRate[_token] ? tokenRate[_token] : feeRate;
         uint256 _fee = _amount * _rate / BASERATE;
         _fee =  _fee > minTokenFee[_token] ? _fee :  minTokenFee[_token];
         require(_amount > _fee, "amount err");
+        _amount = _amount - _fee;
 
-        return _fee;
+        return(_fee, _amount);
     }
+
 
     function getTotalDepositInfo(address token) external view returns(DepositInfo memory) {
         return totalDepositInfo[token];
@@ -377,6 +391,7 @@ contract UserL3ToL2Router is Synchron {
             abi.encode(
                 Dex_Transaction_Withdraw,
                 keccak256(bytes(message.transactionType)),
+                message.from,
                 message.token,
                 message.l2Token,
                 message.destination,

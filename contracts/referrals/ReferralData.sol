@@ -72,6 +72,8 @@ contract ReferralData is Synchron, ITransferAmountData {
 
     function initialize(address usdt) external {
         require(!initialized, "has initialized");
+        require(usdt != address(0), "usdt err");
+
         initialized = true;
         USDT = usdt;
         gov = msg.sender;
@@ -83,12 +85,16 @@ contract ReferralData is Synchron, ITransferAmountData {
     }
 
     function setHandler(address account, bool isAdd) external onlyGov {
+        require(account != address(0), "account err");
+
         isHandler[account] = isAdd;
         
         emit SetHandler(account, isAdd);
     } 
 
     function setOperator(address account, bool isAdd) external onlyGov {
+        require(account != address(0), "account err");
+
         isOperator[account] = isAdd;
 
         emit SetOperator(account, isAdd);

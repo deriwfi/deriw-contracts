@@ -40,6 +40,13 @@ contract GlpRewardRouter is ReentrancyGuard, Governable {
         address _foundReader,
         address _memeData
     ) external onlyGov {
+        require(
+            _glpManager != address(0) &&
+            _foundReader != address(0) &&
+            _memeData != address(0),
+            "addr err"
+        );
+
         glpManager = _glpManager;
         foundReader = IFundReader(_foundReader);
         memeData = IMemeData(_memeData);

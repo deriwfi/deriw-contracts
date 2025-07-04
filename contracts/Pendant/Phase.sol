@@ -123,6 +123,8 @@ contract Phase is Synchron, IStruct, IPhaseStruct {
 
     function initialize(address usdt, address glp) external {
         require(!initialized, "init err");
+        require(usdt != address(0) && glp != address(0), "addr err");
+
         initialized = true;
 
         USDT = usdt;
@@ -139,7 +141,7 @@ contract Phase is Synchron, IStruct, IPhaseStruct {
     }
 
     function setGov(address account) external onlyGov {
-        require(account != address(0), "_gov err");
+        _validate(account);
         gov = account;
     }
 
@@ -164,13 +166,13 @@ contract Phase is Synchron, IStruct, IPhaseStruct {
     function setData(
         address _coinData,
         address _poolDataV2,
-        address _valut,
+        address _vault,
         address _feeBonus,
         address _memeData
     ) external onlyGov {
         coinData = ICoinData(_coinData);
         poolDataV2 = IPoolDataV2(_poolDataV2);
-        vault = IVault(_valut);
+        vault = IVault(_vault);
         feeBonus = _feeBonus;
         memeData = IMemeData(_memeData);
     }
@@ -188,6 +190,7 @@ contract Phase is Synchron, IStruct, IPhaseStruct {
     }
 
     function transferTo(address token, address account, uint256 amount) external {
+        _validate(account);
         require(msg.sender == gov || handler[msg.sender], "no permission");
 
         _transferTo(token, account, amount);
@@ -270,12 +273,14 @@ contract Phase is Synchron, IStruct, IPhaseStruct {
         require(msg.sender == address(vault), "vault err");
         ISlippage(vault.slippage()).addTokens(indexToken);
 
-        if(isLong && !userData[user][collateralToken][indexToken].isLongSet) {
-            longUsers[collateralToken][indexToken].add(user); 
-            userData[user][collateralToken][indexToken].isLongSet = true;
-            userData[user][collateralToken][indexToken].longkey = key;
-            
-            emit SetKey(user, collateralToken, indexToken, key, isLong);
+        if(isLong) {
+            if(!userData[user][collateralToken][indexToken].isLongSet) {
+                longUsers[collateralToken][indexToken].add(user); 
+                userData[user][collateralToken][indexToken].isLongSet = true;
+                userData[user][collateralToken][indexToken].longkey = key;
+                
+                emit SetKey(user, collateralToken, indexToken, key, isLong);
+            }
         } else {
             if(!userData[user][collateralToken][indexToken].isShortSet) {
                 shortUsers[collateralToken][indexToken].add(user);
@@ -697,9 +702,9 @@ contract Phase is Synchron, IStruct, IPhaseStruct {
         vault.validate(vault.whitelistedTokens(_indexToken), 45);
     }
 
-    function getCurrTime() external view returns(uint256) {
-        return block.timestamp;
-    }
+    // function getCurrTime() external view returns(uint256) {
+    //     return block.timestamp;
+    // }
 
     // ******************************************************************************************
     function validateSizeDelta(
@@ -709,11 +714,11 @@ contract Phase is Synchron, IStruct, IPhaseStruct {
         bool isLong
     ) external view returns(bool) {
         if(memeData.isAddMeme(indexToken)) {
-            require(!memeData.isPoolTokenClose(indexToken), "memeToken close");
+            require(!memeData.isPoolTokenClose(indexToken), "meme err");
         }
 
         (uint256 min,) = getValue(user, indexToken, isLong);
-        require(min >= sizeDelta,  "_sizeDelta err");
+        require(min >= sizeDelta,  "size err");
 
         return true;
     }
@@ -861,7 +866,7 @@ contract Phase is Synchron, IStruct, IPhaseStruct {
 
     // ********************************************
     function _setTokenLeverageAndMaxSize(TokenData memory tData, uint256 min) internal {
-        require(tData.maxLeverage > min, "leverage err");
+        require(tData.maxLeverage >= min && tData.maxLeverage <= vault.maxLeverage() , "leverage err");
 
         tokenData[tData.user] = tData;
         if(!isTokenSet[tData.user]) {
@@ -873,21 +878,18 @@ contract Phase is Synchron, IStruct, IPhaseStruct {
 
     function getTokenData(address user) external view returns(uint256, uint256, uint256, bool) {
         if(isTokenSet[user]) {
-            uint256 max =  vault.maxLeverage();
-            if(tokenData[user].maxLeverage > max) {
-                return (
-                    max, 
-                    tokenData[user].maxLongSize, 
-                    tokenData[user].maxShortSize, 
-                    isTokenSet[user]
-                );
-            }
+            return (
+                tokenData[user].maxLeverage, 
+                tokenData[user].maxLongSize, 
+                tokenData[user].maxShortSize,
+                isTokenSet[user]
+            );
         }
-
+        
         return (
-            tokenData[user].maxLeverage, 
+            vault.maxLeverage(), 
             tokenData[user].maxLongSize, 
-            tokenData[user].maxShortSize,
+            tokenData[user].maxShortSize, 
             isTokenSet[user]
         );
     }
@@ -914,5 +916,9 @@ contract Phase is Synchron, IStruct, IPhaseStruct {
 
     function getAmount(address token, address account) public view returns(uint256) {
         return IERC20(token).balanceOf(account);
+    }
+
+    function _validate(address account) internal pure {
+        require(account != address(0), "account err");
     }
 }

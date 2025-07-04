@@ -73,29 +73,42 @@ contract Timelock is ITimelock, Ownable, IPhaseStruct {
         uint256 _maxMarginFeeBasisPoints
     ) {
         require(_buffer <= MAX_BUFFER, "Timelock: invalid _buffer");
-        admin = _admin;
-        buffer = _buffer;
-        glpManager = _glpManager;
         require(
+            _maxMarginFeeBasisPoints <= 500 &&
             _marginFeeBasisPoints < BASE_RATE && 
             _maxMarginFeeBasisPoints < BASE_RATE && 
             _marginFeeBasisPoints <= _maxMarginFeeBasisPoints,
             "rate err"
         );
+        require(
+            _admin != address(0) &&
+            _glpManager != address(0),
+            "addr err"
+        );
+
+        admin = _admin;
+        buffer = _buffer;
+        glpManager = _glpManager;
+
         marginFeeBasisPoints = _marginFeeBasisPoints;
         maxMarginFeeBasisPoints = _maxMarginFeeBasisPoints;
     }
 
     function setAdmin(address _admin) external override onlyOwner {
+        require(_admin != address(0), "addr err");
+
         admin = _admin;
     }
 
     function setExternalAdmin(address _target, address _admin) external onlyAdmin {
+        require(_target != address(0), "_target err");
         require(_target != address(this), "Timelock: invalid _target");
         IAdmin(_target).setAdmin(_admin);
     }
 
     function setContractHandler(address _handler, bool _isActive) external onlyAdmin {
+        require(_handler != address(0), "_handler err");
+
         isHandler[_handler] = _isActive;
     }
 
@@ -110,6 +123,8 @@ contract Timelock is ITimelock, Ownable, IPhaseStruct {
     }
 
     function setKeeper(address _keeper, bool _isActive) external onlyAdmin {
+        require(_keeper != address(0), "_keeper err");
+
         isKeeper[_keeper] = _isActive;
     }
 
@@ -130,8 +145,7 @@ contract Timelock is ITimelock, Ownable, IPhaseStruct {
 
     function setMarginFeeBasisPoints(uint256 _marginFeeBasisPoints, uint256 _maxMarginFeeBasisPoints) external onlyHandlerAndAbove {
         require(
-            _marginFeeBasisPoints < BASE_RATE && 
-            _maxMarginFeeBasisPoints < BASE_RATE && 
+            _maxMarginFeeBasisPoints < 500 && 
             _marginFeeBasisPoints <= _maxMarginFeeBasisPoints,
             "rate err"
         );

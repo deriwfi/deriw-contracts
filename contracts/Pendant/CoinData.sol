@@ -63,6 +63,8 @@ contract CoinData is Synchron, IStruct, IPhaseStruct {
 
     function initialize(address _usdt) external {
         require(!initialized, "has initialized");
+        require(_usdt != address(0), "addr err");
+
         initialized = true;
 
         usdt = _usdt;
@@ -76,10 +78,12 @@ contract CoinData is Synchron, IStruct, IPhaseStruct {
     }
 
     function setOperator(address account) external onlyGov {
+        require(account != address(0), "account err");
         operator = account;
     }
 
     function setMemeData(address _memeData) external onlyGov {
+        require(_memeData != address(0), "_memeData err");
         memeData = IMemeData(_memeData);
     }
 

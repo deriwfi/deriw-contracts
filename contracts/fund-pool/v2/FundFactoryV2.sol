@@ -8,8 +8,9 @@ import "../../libraries/utils/ReentrancyGuard.sol";
 import "./interfaces/IPoolDataV2.sol";
 import "./interfaces/IErrorContractV2.sol";
 import "../../upgradeability/Synchron.sol";
+import "./interfaces/IStruct.sol";
 
-contract FundFactoryV2 is Synchron, FundPoolV2, ReentrancyGuard {
+contract FundFactoryV2 is Synchron, IStruct, ReentrancyGuard {
     IAuthV2 public authV2;
     IErrorContractV2 public errContractV2;
     IPoolDataV2 public poolDataV2;

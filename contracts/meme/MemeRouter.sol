@@ -43,6 +43,12 @@ contract MemeRouter is IMemeStruct {
         address factory_,
         address memeData_
     ) external onlyGov {
+        require(
+            factory_ != address(0) &&
+            memeData_ != address(0),
+            "addr err"
+        );
+
         memeFactory = IMemeFactory(factory_);
         memeData = IMemeData(memeData_);
     }

@@ -39,6 +39,8 @@ contract AuthV2 {
     }
 
     function setFactory(address factory_) external onlyGov {
+        require(factory_ != address(0), "factory_ err");
+
         factory = IFundFactoryV2(factory_);
     }
 
@@ -53,6 +55,7 @@ contract AuthV2 {
     function _addWhitelist(address[] memory accounts) internal {
         for (uint256 i = 0; i < accounts.length; i++) {
             if(!Whitelist.contains(accounts[i])) {
+                require(accounts[i] != address(0), "account err");
                 Whitelist.add(accounts[i]);
                 removelist.remove(accounts[i]);
                 emit AddWhitelist(accounts[i]);
@@ -63,6 +66,7 @@ contract AuthV2 {
     function _removeWhitelist(address[] memory accounts) internal  {
         for (uint256 i = 0; i < accounts.length; i++) {
             if(Whitelist.contains(accounts[i])) {
+                require(accounts[i] != address(0), "account err");
                 Whitelist.remove(accounts[i]);
                 removelist.add(accounts[i]);
                 emit RemoveWhitelist(accounts[i]);
@@ -113,6 +117,7 @@ contract AuthV2 {
     function _addOperator(address pool, address[] memory accounts) internal {
         for (uint256 i = 0; i < accounts.length; i++) {
             if(!operator[pool].contains(accounts[i])) {
+                require(accounts[i] != address(0), "account err");
                 operator[pool].add(accounts[i]);
                 emit AddOperator(msg.sender, pool, accounts[i]);
             }
@@ -122,6 +127,7 @@ contract AuthV2 {
     function _removeOperator(address pool, address[] memory accounts) internal  {
         for (uint256 i = 0; i < accounts.length; i++) {
             if(operator[pool].contains(accounts[i])) {
+                require(accounts[i] != address(0), "account err");
                 operator[pool].remove(accounts[i]);
                 emit RemoveOperator(msg.sender, pool, accounts[i]);
             }
@@ -160,6 +166,7 @@ contract AuthV2 {
     function _addTrader(address pool, address[] memory accounts) internal {
         for (uint256 i = 0; i < accounts.length; i++) {
             if(!trader[pool].contains(accounts[i])) {
+                require(accounts[i] != address(0), "account err");
                 trader[pool].add(accounts[i]);
                 emit AddTrader(msg.sender, pool, accounts[i]);
             }
@@ -169,6 +176,7 @@ contract AuthV2 {
     function _removeTrader(address pool, address[] memory accounts) internal  {
         for (uint256 i = 0; i < accounts.length; i++) {
             if(trader[pool].contains(accounts[i])) {
+                require(accounts[i] != address(0), "account err");
                 trader[pool].remove(accounts[i]);
                 emit RemoveTrader(msg.sender, pool, accounts[i]);
             }

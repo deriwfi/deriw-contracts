@@ -8,8 +8,7 @@ contract PriceFeed is IPriceFeed {
     event SetLatestAnswer(address _token, int256 _answer, uint80 id);
 
     string public override description = "PriceFeed";
-    address public override aggregator;
-    uint256 public decimals;
+    uint8 public decimals = 8;
     address public gov;
 
     mapping(address => int256) public answer;

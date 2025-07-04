@@ -73,14 +73,26 @@ contract FeeBonus is Synchron {
         address _swapAccount,
         address _memeData,
         address _memeSwapAccount,
-        address _valut
+        address _vault
     ) external {
         require(!initialized, "has initialized");
+        require(
+            _usdt != address(0) &&
+            _poolDataV2 != address(0) &&
+            _swapAccount != address(0) &&
+            _memeData != address(0) &&
+            _memeSwapAccount != address(0) &&
+            _vault != address(0),
+            "addr err"
+        );
+
+
+
         initialized = true;
         
         gov = msg.sender;
         usdt = _usdt;
-        _setVault(_valut);
+        _setVault(_vault);
         _init(_poolDataV2, _swapAccount, 7000, 3000);
         _initMeme(_memeData, _memeSwapAccount, 7000, 3000);
     }
