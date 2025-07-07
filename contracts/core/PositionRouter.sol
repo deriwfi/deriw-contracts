@@ -316,7 +316,7 @@ contract PositionRouter is Synchron, ReentrancyGuard, ITransferAmountData {
     }
 
     function setDepositFee(uint256 _depositFee) external onlyAdmin {
-        require(_depositFee < BASIS_POINTS_DIVISOR, "rate_ err");
+        require(_depositFee <= 2000, "rate_ err");
 
         depositFee = _depositFee;
 
@@ -383,8 +383,7 @@ contract PositionRouter is Synchron, ReentrancyGuard, ITransferAmountData {
             revert("len err");
         }
 
-        (, uint256 collateral,,,,,,) = IVault(vault).getPosition(msg.sender, usdt, _indexToken, _isLong);
-        if(collateral == 0) {
+        if(_amountIn > 0) {
             require(_amountIn >= minAmount, "_amountIn err");
         }
 
@@ -436,6 +435,22 @@ contract PositionRouter is Synchron, ReentrancyGuard, ITransferAmountData {
         if(_path.length == 2) {
             require(_path[1] == usdt, "path[1] err");
         }
+
+        (uint256 size,,,,,,,) = IVault(vault).getPosition(msg.sender, usdt, _indexToken, _isLong);
+        uint256 minAmountToUsdAmount = IVault(vault).tokenToUsdMin(usdt, minAmount);
+
+        // if(_sizeDelta > 0) {
+        //     require(
+        //         _sizeDelta >= collateral && 
+        //         (_sizeDelta >= minAmountToUsdAmount || _sizeDelta == size), 
+        //         "_sizeDelta err"
+        //     );
+        // }
+
+        if(_collateralDelta > 0) {
+            require(_collateralDelta >= minAmountToUsdAmount  || _sizeDelta == size, "_collateralDelta err");
+        }
+       
 
         return _createDecreasePosition(
             msg.sender,

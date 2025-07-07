@@ -3,11 +3,12 @@ import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import "@openzeppelin/contracts/utils/cryptography/ECDSA.sol";
 
 import "../upgradeability/Synchron.sol";
+import "../libraries/utils/ReentrancyGuard.sol";
 
 
 pragma solidity ^0.8.0;
 
-contract TokenHelper is Synchron {
+contract TokenHelper is Synchron, ReentrancyGuard {
     using SafeERC20 for IERC20;
     using ECDSA for bytes32;
 
@@ -88,7 +89,6 @@ contract TokenHelper is Synchron {
         address token = message.token;
         address from = message.from;
 
-
         (address user, bytes32 digest) = getSignatureUser(domain, message, signature);
 
         require(from == user && !isHashUse[digest], "signature err");
@@ -99,12 +99,13 @@ contract TokenHelper is Synchron {
             IERC20(token).safeTransferFrom(from, to, amount);
         } else {
             require(msg.value == amount, "amount err");
-            payable(to).transfer(msg.value);
-        }
 
-        emit TransferData(token, from, to, amount);
+            (bool success, ) = to.call{value : amount}("");
+            require(success, "Transfer failed.");
+
+            emit TransferData(token, from, to, amount);
+        }
     }
-    
 
 
     receive() external payable { }
@@ -168,10 +169,11 @@ contract TokenHelper is Synchron {
         }
     }
 
-    function withdrawETH(address account, uint256 amount) external onlyGov() {
+    function withdrawETH(address account, uint256 amount) external onlyGov() nonReentrant() {
         require(account != address(0), "account err");
         require(address(this).balance >= amount, "amount err");
 
-        payable(account).transfer(amount);
+        (bool success, ) = account.call{value : amount}("");
+        require(success, "Transfer failed.");
     }
 }

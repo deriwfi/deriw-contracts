@@ -10,10 +10,11 @@ import "./interfaces/IL1GatewayRouter.sol";
 import "../upgradeability/Synchron.sol";
 import "./interfaces/IInbox.sol";
 import "./interfaces/IERC20Inbox.sol";
+import "../libraries/utils/ReentrancyGuard.sol";
 
 pragma solidity ^0.8.0;
 
-contract UserL2ToL3Router is Synchron {
+contract UserL2ToL3Router is Synchron, ReentrancyGuard {
     using SafeERC20 for IERC20;
     using EnumerableSet for EnumerableSet.AddressSet;
 
@@ -411,10 +412,11 @@ contract UserL2ToL3Router is Synchron {
         value =  minTokenFee[token];
     }
 
-    function withdrawETH(address account, uint256 amount) external onlyGov() {
+    function withdrawETH(address account, uint256 amount) external onlyGov() nonReentrant() {
         require(account != address(0), "account err");
         require(address(this).balance >= amount, "amount err");
 
-        payable(account).transfer(amount);
+        (bool success, ) = account.call{value : amount}("");
+        require(success, "Transfer failed.");
     }
 }

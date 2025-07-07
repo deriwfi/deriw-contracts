@@ -145,7 +145,7 @@ contract Timelock is ITimelock, Ownable, IPhaseStruct {
 
     function setMarginFeeBasisPoints(uint256 _marginFeeBasisPoints, uint256 _maxMarginFeeBasisPoints) external onlyHandlerAndAbove {
         require(
-            _maxMarginFeeBasisPoints < 500 && 
+            _maxMarginFeeBasisPoints <= 500 && 
             _marginFeeBasisPoints <= _maxMarginFeeBasisPoints,
             "rate err"
         );

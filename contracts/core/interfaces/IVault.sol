@@ -6,7 +6,6 @@ import "./IVaultUtils.sol";
 
 
 interface IVault is IEventStruct {
-    function isInitialized() external view returns (bool);
     function isLeverageEnabled() external view returns (bool);
     function setError(uint256 _errorCode, string calldata _error) external;
 
@@ -14,29 +13,19 @@ interface IVault is IEventStruct {
     function router() external view returns (address);
     function gov() external view returns (address);
 
-    function whitelistedTokenCount() external view returns (uint256);
     function maxLeverage() external view returns (uint256);
 
     function minProfitTime() external view returns (uint256);
     function totalTokenWeights() external view returns (uint256);
-
-    function inManagerMode() external view returns (bool);
     function inPrivateLiquidationMode() external view returns (bool);
-
-    function maxGasPrice() external view returns (uint256);
     function isLiquidator(address _account) external view returns (bool);
     function isManager(address _account) external view returns (bool);
 
     function minProfitBasisPoints(address _token) external view returns (uint256);
     function tokenBalances(address _indexToken, address _collateralToken) external view returns (uint256);
-    function lastFundingTimes(address _token) external view returns (uint256);
-
     function setMaxLeverage(uint256 _maxLeverage) external;
-    function setInManagerMode(bool _inManagerMode) external;
     function setManager(address _manager, bool _isManager) external;
     function setIsLeverageEnabled(bool _isLeverageEnabled) external;
-
-    function setBufferAmount(address _token, uint256 _amount) external;
     function setMaxGlobalShortSize(address _token, uint256 _amount) external;
     function setInPrivateLiquidationMode(bool _inPrivateLiquidationMode) external;
     function setLiquidator(address _liquidator, bool _isActive) external;
@@ -111,7 +100,6 @@ interface IVault is IEventStruct {
     function tokenToUsdMin(address _token, uint256 _tokenAmount) external view returns (uint256);
 
     function priceFeed() external view returns (address);
-    function cumulativeFundingRates(address _token) external view returns (uint256);
     function liquidationFeeUsd() external view returns (uint256);
     function marginFeeBasisPoints() external view returns (uint256);
 
@@ -123,7 +111,6 @@ interface IVault is IEventStruct {
     function iswrapped(address _token) external view returns (bool);
     function isFrom(address _token) external view returns (bool);
 
-    function feeReserves(address _token) external view returns (uint256);
     function globalShortSizes(address _token) external view returns (uint256);
     function globalLongSizes(address _token) external view returns (uint256);
     
@@ -134,7 +121,6 @@ interface IVault is IEventStruct {
     function tokenWeights(address _token) external view returns (uint256);
     function guaranteedUsd(address _indexToken, address _token) external view returns (uint256);
     function poolAmounts(address _indexToken, address _token) external view returns (uint256);
-    function bufferAmounts(address _token) external view returns (uint256);
     function reservedAmounts(address _indexToken, address _token) external view returns (uint256);
 
     function getMaxPrice(address _token) external view returns (uint256);
@@ -145,7 +131,6 @@ interface IVault is IEventStruct {
     function setSlippage(address slippage_, address phase_, address referralData_) external;
     
     function globalLongAveragePrices(address _token) external view returns (uint256);
-    function BASIS_POINTS_DIVISOR() external view returns (uint256);
     function validate(bool _condition, uint256 _errorCode) external view;
     function slippage() external view returns (address);
 
