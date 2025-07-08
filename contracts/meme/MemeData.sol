@@ -50,6 +50,10 @@ contract MemeData is Synchron, IMemeStruct {
     event SetInitMinAmount(uint256 amount);
     event SetIsPoolClose(address pool, bool isClose);
 
+    constructor() {
+        initialized = true;
+    }
+
     modifier onlyGov() {
         require(gov == msg.sender, "gov err");
         _;

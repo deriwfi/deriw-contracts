@@ -52,7 +52,11 @@ contract TokenHelper is Synchron, ReentrancyGuard {
         address to,
         uint256 amount
     );
-    
+
+    constructor() {
+        initialized = true;
+    }
+
     modifier onlyGov() {
         require(msg.sender == gov, "no permission");
         _;

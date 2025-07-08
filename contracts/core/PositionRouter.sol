@@ -37,7 +37,6 @@ contract PositionRouter is Synchron, ReentrancyGuard, ITransferAmountData {
     IPhase public phase;
     IBlackList public blackList;
 
-    uint256 public depositFee;
     uint256 public increasePositionBufferBps;
     uint256 public minBlockDelayKeeper;
     uint256 public minTimeDelayPublic;
@@ -184,27 +183,14 @@ contract PositionRouter is Synchron, ReentrancyGuard, ITransferAmountData {
         uint256 afterValue;
     }
 
-    event SetDepositFee(uint256 depositFee);
     event SetIncreasePositionBufferBps(uint256 increasePositionBufferBps);
     event SetReferralStorage(address referralStorage);
     event SetAdmin(address adminFor);
-    event LeverageDecreased(uint256 collateralDelta, uint256 prevLeverage, uint256 nextLeverage);
+
     event SetPositionKeeper(address indexed account, bool isActive);
     event SetIsLeverageEnabled(bool isLeverageEnabled);
     event SetDelayValues(uint256 minBlockDelayKeeper, uint256 minTimeDelayPublic, uint256 maxTimeDelay);
     event CreateIncreaseTransferEvent(IncreaseTransferEvent iEvent);
-
-    event ExecuteIncreaseFeeEvent(
-        bytes32 key,
-        address from, 
-        address to, 
-        uint256 amount, 
-        uint256 beforeAmount, 
-        uint256 afterAmount,
-        uint256 beforeValue,
-        uint256 afterValue
-    );
-
     event CreateIncreasePosition(CreateIncreasePositionEvent cEvent);
     event ExecuteIncreasePosition(ExecuteIncreaseEvent eEvent);
     event CancelIncreasePosition(CancelIncreaseEvent cEvent);
@@ -250,6 +236,13 @@ contract PositionRouter is Synchron, ReentrancyGuard, ITransferAmountData {
         uint256 beforeValue,
         uint256 afterValue
     );
+
+
+
+    constructor() {
+        initialized = true;
+    }
+
 
     modifier onlyGov() {
         require(msg.sender == gov, "Governable: forbidden");
@@ -313,14 +306,6 @@ contract PositionRouter is Synchron, ReentrancyGuard, ITransferAmountData {
         vault = _vault;
         router = _router;
         usdt = _usdt;
-    }
-
-    function setDepositFee(uint256 _depositFee) external onlyAdmin {
-        require(_depositFee <= 2000, "rate_ err");
-
-        depositFee = _depositFee;
-
-        emit SetDepositFee(_depositFee);
     }
 
     function setIncreasePositionBufferBps(uint256 _increasePositionBufferBps) external onlyAdmin {
@@ -439,18 +424,12 @@ contract PositionRouter is Synchron, ReentrancyGuard, ITransferAmountData {
         (uint256 size,,,,,,,) = IVault(vault).getPosition(msg.sender, usdt, _indexToken, _isLong);
         uint256 minAmountToUsdAmount = IVault(vault).tokenToUsdMin(usdt, minAmount);
 
-        // if(_sizeDelta > 0) {
-        //     require(
-        //         _sizeDelta >= collateral && 
-        //         (_sizeDelta >= minAmountToUsdAmount || _sizeDelta == size), 
-        //         "_sizeDelta err"
-        //     );
-        // }
-
-        if(_collateralDelta > 0) {
-            require(_collateralDelta >= minAmountToUsdAmount  || _sizeDelta == size, "_collateralDelta err");
+        if(_sizeDelta > 0) {
+            require(
+                (_sizeDelta >= minAmountToUsdAmount || _sizeDelta == size), 
+                "_sizeDelta err"
+            );
         }
-       
 
         return _createDecreasePosition(
             msg.sender,
@@ -482,22 +461,17 @@ contract PositionRouter is Synchron, ReentrancyGuard, ITransferAmountData {
         bool shouldExecute = _validateExecution(request.blockNumber, request.blockTime, request.account);
         if (!shouldExecute) { return false; }
 
-        uint256 afterFeeAmount;
         address token = request.path[request.path.length - 1];
 
+        uint256 amountIn = request.amountIn;
         if (request.amountIn > 0) {
-            afterFeeAmount = request.amountIn;
-            if(depositFee > 0) {
-                afterFeeAmount = _collectFees(_key, request.account, request.path, request.amountIn, request.indexToken, request.isLong, request.sizeDelta);
-            }
-
-            TransferAmountData memory tData = _safeTransfer(token, vault, afterFeeAmount);
+            TransferAmountData memory tData = _safeTransfer(token, vault, amountIn);
 
             emit ExecuteIncreaseTransferEvent(
                 _key, 
                 address(this),
                 vault, 
-                afterFeeAmount, 
+                amountIn, 
                 tData.beforeAmount, 
                 tData.afterAmount,
                 tData.beforeValue,
@@ -513,7 +487,7 @@ contract PositionRouter is Synchron, ReentrancyGuard, ITransferAmountData {
             request.sizeDelta, 
             request.isLong, 
             request.acceptablePrice,
-            afterFeeAmount
+            amountIn
         );
 
         ExecuteIncreaseEvent memory eEvent = ExecuteIncreaseEvent(
@@ -883,58 +857,6 @@ contract PositionRouter is Synchron, ReentrancyGuard, ITransferAmountData {
         return requestKey;
     }
 
-    function _collectFees(
-        bytes32 _key,
-        address _account,
-        address[] memory _path,
-        uint256 _amountIn,
-        address _indexToken,
-        bool _isLong,
-        uint256 _sizeDelta
-    ) internal returns (uint256) {
-        bool shouldDeductFee = _shouldDeductFee(
-            vault,
-            _account,
-            _path,
-            _amountIn,
-            _indexToken,
-            _isLong,
-            _sizeDelta,
-            increasePositionBufferBps
-        );
-
-        address feeToken = _path[_path.length - 1];
-        if (shouldDeductFee) {
-            bytes32 _k = _key;
-            address _user = _account;
-
-            uint256 afterFeeAmount = _amountIn * (BASIS_POINTS_DIVISOR - depositFee) / BASIS_POINTS_DIVISOR;
-            uint256 feeAmount = _amountIn - afterFeeAmount;
-            feeReserves[feeToken] = feeReserves[feeToken] + feeAmount;
-
-            address iToken = _indexToken;
-
-            TransferAmountData memory tData = _safeTransfer(feeToken, address(referralData), feeAmount);
-
-            referralData.addFee(0, _k, _k, _user, feeToken, feeAmount, iToken);
-            
-            emit ExecuteIncreaseFeeEvent(
-                _k, 
-                address(this), 
-                address(referralData), 
-                feeAmount, 
-                tData.beforeAmount, 
-                tData.afterAmount,
-                tData.beforeValue,
-                tData.afterValue
-            );
-
-            return afterFeeAmount;
-        }
-
-        return _amountIn;
-    }
-
     function _increasePosition(
         bytes32 _key, 
         address _account, 
@@ -1002,44 +924,7 @@ contract PositionRouter is Synchron, ReentrancyGuard, ITransferAmountData {
         return IERC20(token).balanceOf(account);
     }
 
-    function _shouldDeductFee(
-        address _vault,
-        address _account,
-        address[] memory _path,
-        uint256 _amountIn,
-        address _indexToken,
-        bool _isLong,
-        uint256 _sizeDelta,
-        uint256 _increasePositionBufferBps
-    ) internal returns (bool) {
-        // if the position is a short, do not charge a fee
-        if (!_isLong) { return false; }
-
-        // if the position size is not increasing, this is a collateral deposit
-        if (_sizeDelta == 0) { return true; }
-
-        address collateralToken = _path[_path.length - 1];
-
-        IVault vault_ = IVault(_vault);
-        (uint256 size, uint256 collateral, , , , , , ) = vault_.getPosition(_account, collateralToken, _indexToken, _isLong);
-
-        // if there is no existing position, do not charge a fee
-        if (size == 0) { return false; }
-
-        uint256 nextSize = size + _sizeDelta;
-        uint256 collateralDelta = vault_.tokenToUsdMin(collateralToken, _amountIn);
-        uint256 nextCollateral = collateral + collateralDelta;
-
-        uint256 prevLeverage = size * BASIS_POINTS_DIVISOR / collateral;
-        // allow for a maximum of a increasePositionBufferBps decrease since there might be some swap fees taken from the collateral
-        uint256 nextLeverage = nextSize * (BASIS_POINTS_DIVISOR + _increasePositionBufferBps) / nextCollateral;
-
-        emit LeverageDecreased(collateralDelta, prevLeverage, nextLeverage);
-
-        // deduct a fee if the leverage is decreased
-        return nextLeverage < prevLeverage;
-    }
-
+    
     function _increasePosition(
         bytes32 _key,
         address _vault,

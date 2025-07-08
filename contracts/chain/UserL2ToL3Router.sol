@@ -80,6 +80,10 @@ contract UserL2ToL3Router is Synchron, ReentrancyGuard {
     event RemoveWhitelist(address token); 
     event TransferFee(address token, address to, uint256 fee);
 
+    constructor() {
+        initialized = true;
+    }
+
     modifier onlyGov() {
         require(msg.sender == gov, "no permission");
         _;

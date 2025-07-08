@@ -51,6 +51,10 @@ contract CoinData is Synchron, IStruct, IPhaseStruct {
         uint256 _coinRate
     ); 
 
+    constructor() {
+        initialized = true;
+    }
+
     modifier onlyGov() {
         require(gov == msg.sender, "gov err");
         _;

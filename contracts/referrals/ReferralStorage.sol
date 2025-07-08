@@ -29,6 +29,10 @@ contract ReferralStorage is Synchron {
     event BatchRegisterCode(RegisterData[] rData);
     event SetTraderReferralCode(address user, address ref, string code);
 
+    constructor() {
+        initialized = true;
+    }
+
     modifier onlyHandler() {
         require(isHandler[msg.sender], "ReferralStorage: forbidden");
         _;

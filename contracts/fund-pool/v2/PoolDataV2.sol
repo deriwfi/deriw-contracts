@@ -107,6 +107,11 @@ contract PoolDataV2 is Synchron, IStruct, ITransferAmountData {
         TransferAmountData tData
     ); 
 
+    constructor() {
+        initialized = true;
+    }
+
+
     modifier onlyGov() {
         require(gov == msg.sender, "gov err");
         _;

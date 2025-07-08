@@ -52,7 +52,9 @@ contract ReferralData is Synchron, ITransferAmountData {
         TransferAmountData tData
     );
 
-
+    constructor() {
+        initialized = true;
+    }
 
     modifier onlyGov() {
         require(msg.sender == gov, "Governable: forbidden");

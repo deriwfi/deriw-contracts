@@ -27,6 +27,10 @@ contract FundFactoryV2 is Synchron, IStruct, ReentrancyGuard {
 
     event CreatePool(address creator, address pool, address token);
 
+    constructor() {
+        initialized = true;
+    }
+
 
     modifier onlyGov() {
         require(gov == msg.sender, "gov err");

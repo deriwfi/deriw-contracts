@@ -39,13 +39,7 @@ contract OrderBook is Synchron, ReentrancyGuard, IOStruct, IOrderStruct {
     mapping (address => uint256) public increaseOrdersIndex;
     mapping (address => mapping(uint256 => DecreaseOrder)) public decreaseOrders;
     mapping (address => uint256) public decreaseOrdersIndex;
-
-    mapping (address => mapping(uint256 => uint256)) public orderBlockNumber;
-    mapping (address => uint256) public feeReserves;
-    uint256 public increasePositionBufferBps;
-    uint256 public depositFee;
-    uint256 public minBlockDelayKeeper;
-    uint256 public minTimeDelayPublic;
+    mapping (address => bool) public isPositionKeeper;
 
     event ExecuteIncreaseOrderEvent(
         uint256 orderIndex,
@@ -188,7 +182,14 @@ contract OrderBook is Synchron, ReentrancyGuard, IOStruct, IOrderStruct {
     event UpdateMinPurchaseTokenAmountUsd(uint256 minPurchaseTokenAmountUsd);
     event UpdateGov(address gov);
     event SetCancelAccount(address account);
+
+    event SetPositionKeeper(address indexed account, bool isActive);
     
+
+    constructor() {
+        initialized = true;
+    }
+
     modifier onlyGov() {
         require(msg.sender == gov, "OrderBook: forbidden");
         _;
@@ -199,11 +200,16 @@ contract OrderBook is Synchron, ReentrancyGuard, IOStruct, IOrderStruct {
         _;
     }
 
+    modifier onlyPositionKeeper() {
+        require(isPositionKeeper[msg.sender], "403");
+        _;
+    }
+
+
     function initialize() external {
         require(!initialized, "has initialized");
         initialized = true;
 
-        increasePositionBufferBps = 100;
         gov = msg.sender;
     }
 
@@ -255,6 +261,14 @@ contract OrderBook is Synchron, ReentrancyGuard, IOStruct, IOrderStruct {
         emit SetCancelAccount(account);
     }
 
+    function setPositionKeeper(address _account, bool _isActive) external onlyGov {
+        require(_account != address(0), "_account err");
+        
+        isPositionKeeper[_account] = _isActive;
+        emit SetPositionKeeper(_account, _isActive);
+    }
+
+
     function createIncreaseOrder(
         address[] memory _path,
         uint256 _amountIn,
@@ -279,15 +293,6 @@ contract OrderBook is Synchron, ReentrancyGuard, IOStruct, IOrderStruct {
             uint256 _purchaseTokenAmountUsd = IVault(vault).tokenToUsdMin(_purchaseToken, _purchaseTokenAmount);
             require(_purchaseTokenAmountUsd >= minPurchaseTokenAmountUsd, "OrderBook: insufficient collateral");
         }
-
-        // if(_sizeDelta > 0) {
-        //     (,uint256 collateral,,,,,,) = IVault(vault).getPosition(msg.sender, usdt, _indexToken, _isLong);
-        //     uint256 amountInToUsdAmount = IVault(vault).tokenToUsdMin(usdt, _amountIn);
-        //     collateral += amountInToUsdAmount;
-
-        //     require(_sizeDelta >= collateral && collateral > 0, "para err");
-        // }
-
 
         uint256 _orderIndex = _createIncreaseOrder(
             _purchaseToken,
@@ -343,15 +348,9 @@ contract OrderBook is Synchron, ReentrancyGuard, IOStruct, IOrderStruct {
         _cancelIncreaseOrder(msg.sender, _orderIndex);
     }
 
-    function executeIncreaseOrder(address _address, uint256 _orderIndex) external nonReentrant {
+    function executeIncreaseOrder(address _address, uint256 _orderIndex) external onlyPositionKeeper nonReentrant {
         IncreaseOrder memory order = increaseOrders[_address][_orderIndex];
         require(order.account != address(0), "OrderBook: non-existent order");
-
-        require(
-            orderBlockNumber[_address][_orderIndex] + minBlockDelayKeeper <= block.number &&
-            order.time + minTimeDelayPublic <= block.timestamp,
-            "execute err"
-        );
 
         ISlippage(IVault(vault).slippage()).validateCreate(order.indexToken);
         require(
@@ -415,10 +414,12 @@ contract OrderBook is Synchron, ReentrancyGuard, IOStruct, IOrderStruct {
     ) public nonReentrant {
         (uint256 size,,,,,,,) = IVault(vault).getPosition(msg.sender, usdt, _indexToken, _isLong);
 
-        if(_collateralDelta > 0) {
-            require(_collateralDelta >= minPurchaseTokenAmountUsd || _sizeDelta == size, "_collateralDelta err");
+        if(_sizeDelta > 0) {
+            require(
+                (_sizeDelta >= minPurchaseTokenAmountUsd || _sizeDelta == size), 
+                "_sizeDelta err"
+            );
         }
-
 
         ISlippage(IVault(vault).slippage()).validateRemoveTime(_indexToken);
         _createDecreaseOrder(
@@ -435,7 +436,7 @@ contract OrderBook is Synchron, ReentrancyGuard, IOStruct, IOrderStruct {
     }
 
 
-    function executeDecreaseOrder(address _address, uint256 _orderIndex)  external nonReentrant {
+    function executeDecreaseOrder(address _address, uint256 _orderIndex)  external onlyPositionKeeper nonReentrant {
         DecreaseOrder memory order = decreaseOrders[_address][_orderIndex];
         require(order.account != address(0), "OrderBook: non-existent order");
 
@@ -582,7 +583,6 @@ contract OrderBook is Synchron, ReentrancyGuard, IOStruct, IOrderStruct {
             block.timestamp
         );
 
-        orderBlockNumber[_account][_orderIndex] = block.number;
         increaseOrdersIndex[_account] = _orderIndex + 1;
         increaseOrders[_account][_orderIndex] = order;
 
@@ -784,140 +784,6 @@ contract OrderBook is Synchron, ReentrancyGuard, IOStruct, IOrderStruct {
             order.lever,
             order.time
         );
-    }
-
-    uint256 public constant BASIS_POINTS_DIVISOR = 10000;
-    event SetDelayValues(uint256 minBlock, uint256 minTime);
-    event SetIncreasePositionBufferBps(uint256 increasePositionBufferBps);
-    event SetDepositFee(uint256 depositFee); 
-    event ExecuteIncreaseFeeEvent(
-        bytes32 key,
-        address from, 
-        address to, 
-        uint256 amount, 
-        uint256 beforeAmount, 
-        uint256 afterAmount,
-        uint256 beforeValue,
-        uint256 afterValue
-    );
-
-    event LeverageDecreased(uint256 collateralDelta, uint256 prevLeverage, uint256 nextLeverage);
-
-
-    function setDelayValues(
-        uint256 _minBlockDelayKeeper, 
-        uint256 _minTimeDelayPublic
-    ) external onlyGov {
-        minBlockDelayKeeper = _minBlockDelayKeeper;
-        minTimeDelayPublic = _minTimeDelayPublic;
-
-        emit SetDelayValues(_minBlockDelayKeeper, _minTimeDelayPublic);
-    }
-
-    function setDepositFee(uint256 _depositFee) external onlyGov {
-        require(_depositFee <= 2000, "rate_ err");
-
-        depositFee = _depositFee;
-
-        emit SetDepositFee(_depositFee);
-    }
-
-    function setIncreasePositionBufferBps(uint256 _increasePositionBufferBps) external onlyGov {
-        increasePositionBufferBps = _increasePositionBufferBps;
-
-        emit SetIncreasePositionBufferBps(_increasePositionBufferBps);
-    }
-
-
-    function _collectFees(
-        bytes32 _key,
-        address _account,
-        address[] memory _path,
-        uint256 _amountIn,
-        address _indexToken,
-        bool _isLong,
-        uint256 _sizeDelta
-    ) internal returns (uint256) {
-        bool shouldDeductFee = _shouldDeductFee(
-            vault,
-            _account,
-            _path,
-            _amountIn,
-            _indexToken,
-            _isLong,
-            _sizeDelta,
-            increasePositionBufferBps
-        );
-
-        address feeToken = _path[_path.length - 1];
-        if (shouldDeductFee) {
-            bytes32 _k = _key;
-            address _user = _account;
-
-            uint256 afterFeeAmount = _amountIn * (BASIS_POINTS_DIVISOR - depositFee) / BASIS_POINTS_DIVISOR;
-            uint256 feeAmount = _amountIn - afterFeeAmount;
-            feeReserves[feeToken] = feeReserves[feeToken] + feeAmount;
-
-            address iToken = _indexToken;
-
-            TransferAmountData memory tData = _safeTransfer(feeToken, address(referralData), feeAmount);
-
-            referralData.addFee(0, _k, _k, _user, feeToken, feeAmount, iToken);
-            
-            emit ExecuteIncreaseFeeEvent(
-                _k, 
-                address(this), 
-                address(referralData), 
-                feeAmount, 
-                tData.beforeAmount, 
-                tData.afterAmount,
-                tData.beforeValue,
-                tData.afterValue
-            );
-
-            return afterFeeAmount;
-        }
-
-        return _amountIn;
-    }
-
-
-    function _shouldDeductFee(
-        address _vault,
-        address _account,
-        address[] memory _path,
-        uint256 _amountIn,
-        address _indexToken,
-        bool _isLong,
-        uint256 _sizeDelta,
-        uint256 _increasePositionBufferBps
-    ) internal returns (bool) {
-        // if the position is a short, do not charge a fee
-        if (!_isLong) { return false; }
-
-        // if the position size is not increasing, this is a collateral deposit
-        if (_sizeDelta == 0) { return true; }
-
-        address collateralToken = _path[_path.length - 1];
-
-        IVault vault_ = IVault(_vault);
-        (uint256 size, uint256 collateral, , , , , , ) = vault_.getPosition(_account, collateralToken, _indexToken, _isLong);
-
-        // if there is no existing position, do not charge a fee
-        if (size == 0) { return false; }
-
-        uint256 nextSize = size + _sizeDelta;
-        uint256 collateralDelta = vault_.tokenToUsdMin(collateralToken, _amountIn);
-        uint256 nextCollateral = collateral + collateralDelta;
-
-        uint256 prevLeverage = size * BASIS_POINTS_DIVISOR / collateral;
-        // allow for a maximum of a increasePositionBufferBps decrease since there might be some swap fees taken from the collateral
-        uint256 nextLeverage = nextSize * (BASIS_POINTS_DIVISOR + _increasePositionBufferBps) / nextCollateral;
-
-        emit LeverageDecreased(collateralDelta, prevLeverage, nextLeverage);
-
-        // deduct a fee if the leverage is decreased
-        return nextLeverage < prevLeverage;
     }
 
 }

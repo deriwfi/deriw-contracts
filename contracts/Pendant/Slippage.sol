@@ -70,6 +70,10 @@ contract Slippage is  Synchron, IEventStruct {
         uint256 endtime
     );
 
+    constructor() {
+        initialized = true;
+    }
+
     modifier onlyGov() {
         require(msg.sender == gov, "Governable: forbidden");
         _;

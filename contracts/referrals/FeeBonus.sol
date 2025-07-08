@@ -56,6 +56,9 @@ contract FeeBonus is Synchron {
     event ClaimFeeAmount(address handler, address account, uint256 fee1, uint256 fee2);
     event ClaimMemeFeeAmount(address handler, address account, uint256 fee);
 
+    constructor() {
+        initialized = true;
+    }
 
     modifier onlyGov() {
         require(gov == msg.sender, "gov err");

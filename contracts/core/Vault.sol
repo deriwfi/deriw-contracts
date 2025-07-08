@@ -153,6 +153,12 @@ contract Vault is Synchron, ReentrancyGuard, IEventStruct {
         uint256 beforeValue,
         uint256 afterValue
     );
+    
+    constructor() {
+        initialized = true;
+    }
+
+
 
     modifier onlyWhitelistedToken(address _token) {
         require(whitelistedTokens[_token], "token err");

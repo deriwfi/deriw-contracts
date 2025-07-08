@@ -116,6 +116,10 @@ contract Phase is Synchron, IStruct, IPhaseStruct {
         uint256 pid
     );
 
+    constructor() {
+        initialized = true;
+    }
+
     modifier onlyGov() {
         require(gov == msg.sender, "gov err");
         _;

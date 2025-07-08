@@ -58,6 +58,10 @@ contract Risk is Synchron, ITransferAmountData {
     event FundDeposit(DepositData dData);
     event SetProfitData(ProfitData[] pData);
 
+    constructor() {
+        initialized = true;
+    }
+
     modifier onlyGov() {
         require(gov == msg.sender, "gov err");
         _;

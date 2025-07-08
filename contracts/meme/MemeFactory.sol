@@ -36,6 +36,10 @@ contract MemeFactory is Synchron, ReentrancyGuard {
     mapping(address => bool) public operator;
     mapping(address => bool) public trader;
 
+    constructor() {
+        initialized = true;
+    }
+
     modifier onlyGov() {
         require(gov == msg.sender, "no permission");
         _;
