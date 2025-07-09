@@ -10,6 +10,7 @@ import "../../core/interfaces/IVault.sol";
 import "../../Pendant/interfaces/IPhase.sol";
 import "./interfaces/IRisk.sol";
 import "../../referrals/interfaces/IFeeBonus.sol";
+import "../../Pendant/interfaces/ISlippage.sol";
 
 contract FundReader is IStruct {
     uint256 public constant baseRate = 10000;
@@ -212,26 +213,38 @@ contract FundReader is IStruct {
     }
 
 
-    function getOutAmountFor(address tokenOut, uint256 glpAmount) public view returns(uint256 userAmount) {
+    function getOutAmountFor(address tokenOut, uint256 glpAmount) public view returns(uint256) {
         address pool = poolDataV2.currPool();
         uint256 pid = poolDataV2.currPeriodID(pool);
         if(pid == 0) {
             return 0;
         }
 
-        IRisk risk = IRisk(poolDataV2.risk());
-        address token = poolDataV2.poolToken(pool);
         uint256 outAmount = phase.getOutAmount(tokenOut, tokenOut, glpAmount);
-        uint256 riskAmount = risk.totalRiskDeposit(address(poolDataV2), pool, token, pid);
+
         IFeeBonus feeBonus = IFeeBonus(poolDataV2.feeBonus());
         uint256 fee1 = feeBonus.feeAmount(address(poolDataV2));
         uint256 fee2 = feeBonus.phasefeeAmount(address(poolDataV2));
 
-        outAmount += (fee1 + fee2);
-
+        ISlippage sli = ISlippage(vault.slippage());
+        uint256 total =  sli.glpTokenSupply(tokenOut, tokenOut);
+        outAmount += (fee1 + fee2) * glpAmount / total; 
         FoundStateV2 memory fState = poolDataV2.getFoundState(pool, pid);        
 
         uint256 dAmount =  fState.depositAmount;
+        return _getOutAmountFor(tokenOut, pool, pid, outAmount, dAmount);
+
+    }
+
+    function _getOutAmountFor(
+        address tokenOut, 
+        address pool,
+        uint256 pid,
+        uint256 outAmount,
+        uint256 dAmount
+    ) internal view returns(uint256 userAmount) {
+        IRisk risk = IRisk(poolDataV2.risk());
+        uint256 riskAmount = risk.totalRiskDeposit(address(poolDataV2), pool, tokenOut, pid);
         uint256 len = risk.getProfitDataLength();
         uint256 rAmount;
         if(outAmount > dAmount) {

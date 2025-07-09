@@ -31,7 +31,8 @@ contract OrderBook is Synchron, ReentrancyGuard, IOStruct, IOrderStruct {
     IBlackList public blackList;
     IReferralData public referralData;
 
-    uint256 public minPurchaseTokenAmountUsd;
+    uint256 public minAmount;
+    uint256 public initAmount;
 
     bool public initialized;
 
@@ -175,16 +176,15 @@ contract OrderBook is Synchron, ReentrancyGuard, IOStruct, IOrderStruct {
         address _vault,
         address _usdt,
         address _blackList,
-        address _referralData,
-        uint256 _minPurchaseTokenAmountUsd
+        address _referralData
     );
 
-    event UpdateMinPurchaseTokenAmountUsd(uint256 minPurchaseTokenAmountUsd);
+
     event UpdateGov(address gov);
     event SetCancelAccount(address account);
 
     event SetPositionKeeper(address indexed account, bool isActive);
-    
+    event SetMinAndInitAmount(uint256 minAmount, uint256 initAmount);
 
     constructor() {
         initialized = true;
@@ -205,10 +205,12 @@ contract OrderBook is Synchron, ReentrancyGuard, IOStruct, IOrderStruct {
         _;
     }
 
-
     function initialize() external {
         require(!initialized, "has initialized");
         initialized = true;
+
+        initAmount = 10e6;
+        minAmount = 10e6;
 
         gov = msg.sender;
     }
@@ -217,7 +219,6 @@ contract OrderBook is Synchron, ReentrancyGuard, IOStruct, IOrderStruct {
         address _router,
         address _vault,
         address _usdt,
-        uint256 _minPurchaseTokenAmountUsd,
         address _blackList,
         address _referralData
     ) external onlyGov {
@@ -233,17 +234,20 @@ contract OrderBook is Synchron, ReentrancyGuard, IOStruct, IOrderStruct {
         router = _router;
         vault = _vault;
         usdt = _usdt;
-        minPurchaseTokenAmountUsd = _minPurchaseTokenAmountUsd;
         blackList = IBlackList(_blackList);
         referralData = IReferralData(_referralData);
 
-        emit Initialize(_router, _vault, _usdt, _blackList, _referralData, _minPurchaseTokenAmountUsd);
+        emit Initialize(_router, _vault, _usdt, _blackList, _referralData);
     }
 
-    function setMinPurchaseTokenAmountUsd(uint256 _minPurchaseTokenAmountUsd) external onlyGov {
-        minPurchaseTokenAmountUsd = _minPurchaseTokenAmountUsd;
+    function setMinAndInitAmount(uint256 _minAmount, uint256 _initAmount) external onlyGov {
+        require(_minAmount > 0, "_minAmount err");
+        require(_initAmount > 0, "_initAmount err");
 
-        emit UpdateMinPurchaseTokenAmountUsd(_minPurchaseTokenAmountUsd);
+        minAmount = _minAmount;
+        initAmount = _initAmount;
+
+        emit SetMinAndInitAmount(_minAmount, _initAmount);
     }
 
     function setGov(address _gov) external onlyGov {
@@ -283,15 +287,22 @@ contract OrderBook is Synchron, ReentrancyGuard, IOStruct, IOrderStruct {
         require(!blackList.getBlackListAddressIsIn(msg.sender), "is blackList");
         require(!blackList.isFusing(), "has fusing");
         require(_triggerPrice > 0, "_triggerPrice err");
+        if(_amountIn == 0 && _sizeDelta == 0) {
+            revert("value err");
+        }
 
         ISlippage(IVault(vault).slippage()).validateLever(msg.sender, usdt, _indexToken, _amountIn, _sizeDelta, _isLong);
         IPhase(IVault(vault).phase()).validateSizeDelta(msg.sender, _indexToken, _sizeDelta, _isLong);
 
         (address _purchaseToken, uint256 _purchaseTokenAmount) = _purchase(_path, _amountIn);
 
-        if(_purchaseTokenAmount > 0) {
-            uint256 _purchaseTokenAmountUsd = IVault(vault).tokenToUsdMin(_purchaseToken, _purchaseTokenAmount);
-            require(_purchaseTokenAmountUsd >= minPurchaseTokenAmountUsd, "OrderBook: insufficient collateral");
+        (,uint256 collateral,,,,,,) = IVault(vault).getPosition(msg.sender, usdt, _indexToken, _isLong);
+        if(collateral == 0) {
+            require(_purchaseTokenAmount >= initAmount, "amount err");
+        }
+        if(_sizeDelta > 0) {
+            uint256 minAmountToUsdAmount = IVault(vault).tokenToUsdMin(usdt, minAmount);
+            require(_sizeDelta >= minAmountToUsdAmount, "OrderBook: insufficient collateral");
         }
 
         uint256 _orderIndex = _createIncreaseOrder(
@@ -412,11 +423,15 @@ contract OrderBook is Synchron, ReentrancyGuard, IOStruct, IOrderStruct {
         bool _triggerAboveThreshold,
         uint256 _lever
     ) public nonReentrant {
-        (uint256 size,,,,,,,) = IVault(vault).getPosition(msg.sender, usdt, _indexToken, _isLong);
+        if(_collateralDelta == 0 && _sizeDelta == 0) {
+            revert("value err");
+        }
 
         if(_sizeDelta > 0) {
+            (uint256 size,,,,,,,) = IVault(vault).getPosition(msg.sender, usdt, _indexToken, _isLong);
+            uint256 minAmountToUsdAmount = IVault(vault).tokenToUsdMin(usdt, minAmount);
             require(
-                (_sizeDelta >= minPurchaseTokenAmountUsd || _sizeDelta == size), 
+                (_sizeDelta >= minAmountToUsdAmount || _sizeDelta == size), 
                 "_sizeDelta err"
             );
         }

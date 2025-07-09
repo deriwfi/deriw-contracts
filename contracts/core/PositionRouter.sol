@@ -43,6 +43,8 @@ contract PositionRouter is Synchron, ReentrancyGuard, ITransferAmountData {
     uint256 public maxTimeDelay;
     uint256 public totalIncreaseIndex;
     uint256 public totalDecreaseIndex;
+    uint256 public minAmount;
+    uint256 public initAmount;
 
     EnumerableSet.UintSet increaseIndex;
     EnumerableSet.UintSet decreaseIndex;
@@ -237,6 +239,7 @@ contract PositionRouter is Synchron, ReentrancyGuard, ITransferAmountData {
         uint256 afterValue
     );
 
+    event SetMinAndInitAmount(uint256 minAmount, uint256 initAmount);
 
 
     constructor() {
@@ -262,6 +265,9 @@ contract PositionRouter is Synchron, ReentrancyGuard, ITransferAmountData {
     function initialize() external {
         require(!initialized, "has initialized");
         initialized = true;
+
+        initAmount = 10e6;
+        minAmount = 10e6;
 
         increasePositionBufferBps = 100;
         isLeverageEnabled = true;
@@ -306,6 +312,17 @@ contract PositionRouter is Synchron, ReentrancyGuard, ITransferAmountData {
         vault = _vault;
         router = _router;
         usdt = _usdt;
+    }
+
+
+    function setMinAndInitAmount(uint256 _minAmount, uint256 _initAmount) external onlyAdmin {
+        require(_minAmount > 0, "_minAmount err");
+        require(_initAmount > 0, "_initAmount err");
+
+        minAmount = _minAmount;
+        initAmount = _initAmount;
+
+        emit SetMinAndInitAmount(_minAmount, _initAmount);
     }
 
     function setIncreasePositionBufferBps(uint256 _increasePositionBufferBps) external onlyAdmin {
@@ -368,8 +385,18 @@ contract PositionRouter is Synchron, ReentrancyGuard, ITransferAmountData {
             revert("len err");
         }
 
-        if(_amountIn > 0) {
-            require(_amountIn >= minAmount, "_amountIn err");
+        if(_amountIn == 0 && _sizeDelta == 0) {
+            revert("value err");
+        }
+
+        (,uint256 collateral,,,,,,) = IVault(vault).getPosition(msg.sender, usdt, _indexToken, _isLong);
+        if(collateral == 0) {
+            require(_amountIn >= initAmount, "amount err");
+        }
+
+        if(_sizeDelta > 0) {
+            uint256 minAmountToUsdAmount = IVault(vault).tokenToUsdMin(usdt, minAmount);
+            require(_sizeDelta >= minAmountToUsdAmount, "_sizeDelta err");
         }
 
         ISlippage(IVault(vault).slippage()).validateLever(msg.sender, usdt, _indexToken, _amountIn, _sizeDelta, _isLong);
@@ -421,10 +448,14 @@ contract PositionRouter is Synchron, ReentrancyGuard, ITransferAmountData {
             require(_path[1] == usdt, "path[1] err");
         }
 
-        (uint256 size,,,,,,,) = IVault(vault).getPosition(msg.sender, usdt, _indexToken, _isLong);
-        uint256 minAmountToUsdAmount = IVault(vault).tokenToUsdMin(usdt, minAmount);
+        if(_collateralDelta == 0 && _sizeDelta == 0) {
+            revert("value err");
+        }
 
         if(_sizeDelta > 0) {
+            (uint256 size,,,,,,,) = IVault(vault).getPosition(msg.sender, usdt, _indexToken, _isLong);
+            uint256 minAmountToUsdAmount = IVault(vault).tokenToUsdMin(usdt, minAmount);
+
             require(
                 (_sizeDelta >= minAmountToUsdAmount || _sizeDelta == size), 
                 "_sizeDelta err"
@@ -1007,15 +1038,5 @@ contract PositionRouter is Synchron, ReentrancyGuard, ITransferAmountData {
         }
 
         return false;
-    }
-
-    uint256 public minAmount;
-    event SetMinAmount(uint256 _minAmount);
-    function setMinAmount(uint256 _minAmount) external onlyAdmin {
-        require(_minAmount > 0, "_minAmount err");
-
-        minAmount = _minAmount;
-
-        emit SetMinAmount(_minAmount);
     }
 }

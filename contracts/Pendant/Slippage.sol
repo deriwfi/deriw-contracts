@@ -637,5 +637,134 @@ contract Slippage is  Synchron, IEventStruct {
         require(msg.sender == gov || coinData.operator(msg.sender), "set err");
         isCheck = _isCheck;
     }
+
+    // *************************************************************************
+    uint256 public constant MAX_INT256 = uint256(type(int256).max);
+    function getDecreasePositionNextGlobalLongShortData(
+        address _account,
+        address _collateralToken,
+        address _indexToken,
+        uint256 _nextPrice,
+        uint256 _sizeDelta,
+        bool _isLong
+    ) external view returns (uint256, uint256) {
+        int256 realisedPnl = getRealisedPnl(_account,_collateralToken, _indexToken, _sizeDelta, _isLong);
+
+        uint256 averagePrice = _isLong ? vault.globalLongAveragePrices(_indexToken) : vault.globalShortAveragePrices(_indexToken);
+        uint256 priceDelta = averagePrice > _nextPrice ? averagePrice - _nextPrice : _nextPrice - averagePrice;
+
+        uint256 nextSize;
+        uint256 delta;
+        // avoid stack to deep
+        {
+            uint256 size = _isLong ? vault.globalLongSizes(_indexToken) : vault.globalShortSizes(_indexToken);
+            nextSize = size - _sizeDelta;
+
+            if (nextSize == 0) {
+                return (0, 0);
+            }
+
+            if (averagePrice == 0) {
+                return (nextSize, _nextPrice);
+            }
+
+            delta = size * priceDelta / averagePrice;
+        }
+
+        uint256 nextAveragePrice = _getNextGlobalAveragePrice(
+            averagePrice,
+            _nextPrice,
+            nextSize,
+            delta,
+            realisedPnl,
+            _isLong
+        );
+
+        return (nextSize, nextAveragePrice);
+    }
+
+    function getRealisedPnl(
+        address _account,
+        address _collateralToken,
+        address _indexToken,
+        uint256 _sizeDelta,
+        bool _isLong
+    ) public view returns (int256) {
+        IVault _vault = vault;
+        (uint256 size, /*uint256 collateral*/, uint256 averagePrice, , , , , uint256 lastIncreasedTime) = _vault.getPosition(_account, _collateralToken, _indexToken, _isLong);
+
+        (bool hasProfit, uint256 delta) = _vault.getDelta(_indexToken, size, averagePrice, _isLong, lastIncreasedTime);
+        // get the proportional change in pnl
+        uint256 adjustedDelta = _sizeDelta * delta / size;
+        require(adjustedDelta < MAX_INT256, "ShortsTracker: overflow");
+        return hasProfit ? int256(adjustedDelta) : -int256(adjustedDelta);
+    }
+
+    function _getNextGlobalAveragePrice(
+        uint256 _averagePrice,
+        uint256 _nextPrice,
+        uint256 _nextSize,
+        uint256 _delta,
+        int256 _realisedPnl,
+        bool _isLong
+    ) public pure returns (uint256) {
+        (bool hasProfit, uint256 nextDelta) = _getNextDelta(_delta, _averagePrice, _nextPrice, _realisedPnl, _isLong);
+        
+        uint256 divisor;
+        if (_isLong) {
+            divisor = hasProfit ? _nextSize + nextDelta : _nextSize - nextDelta;
+        } else {
+            divisor = hasProfit ? _nextSize - nextDelta : _nextSize + nextDelta;
+        }
+        uint256 nextAveragePrice = _nextPrice * _nextSize / divisor;
+
+        return nextAveragePrice;
+    }
+
+
+    function _getNextDelta(
+        uint256 _delta,
+        uint256 _averagePrice,
+        uint256 _nextPrice,
+        int256 _realisedPnl,
+        bool _isLong
+    ) internal pure returns (bool, uint256) {
+        // global delta 10000, realised pnl 1000 => new pnl 9000
+        // global delta 10000, realised pnl -1000 => new pnl 11000
+        // global delta -10000, realised pnl 1000 => new pnl -11000
+        // global delta -10000, realised pnl -1000 => new pnl -9000
+        // global delta 10000, realised pnl 11000 => new pnl -1000 (flips sign)
+        // global delta -10000, realised pnl -11000 => new pnl 1000 (flips sign)
+
+        bool hasProfit = _isLong ? _averagePrice < _nextPrice : _averagePrice > _nextPrice;
+        if (hasProfit) {
+            // global shorts pnl is positive
+            if (_realisedPnl > 0) {
+                if (uint256(_realisedPnl) > _delta) {
+                    _delta = uint256(_realisedPnl) - _delta;
+                    hasProfit = false;
+                } else {
+                    _delta = _delta - uint256(_realisedPnl);
+                }
+            } else {
+                _delta = _delta + uint256(-_realisedPnl);
+            }
+
+            return (hasProfit, _delta);
+        }
+
+        if (_realisedPnl > 0) {
+            _delta = _delta + uint256(_realisedPnl);
+        } else {
+            if (uint256(-_realisedPnl) > _delta) {
+                _delta = uint256(-_realisedPnl) - _delta;
+                hasProfit = true;
+            } else {
+                _delta = _delta - uint256(-_realisedPnl);
+            }
+        }
+        return (hasProfit, _delta);
+    }
+
 }  
 

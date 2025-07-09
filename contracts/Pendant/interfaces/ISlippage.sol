@@ -103,4 +103,13 @@ interface ISlippage {
 
     function addTokens(address indexToken) external;
 
+    function getDecreasePositionNextGlobalLongShortData(
+        address _account,
+        address _collateralToken,
+        address _indexToken,
+        uint256 _nextPrice,
+        uint256 _sizeDelta,
+        bool _isLong
+    ) external view returns (uint256, uint256);
+
 }

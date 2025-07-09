@@ -10,7 +10,7 @@ import "../libraries/utils/ReentrancyGuard.sol";
 import "./interfaces/IVaultUtils.sol";
 import "./interfaces/IVaultPriceFeed.sol";
 import "../Pendant/interfaces/ISlippage.sol";
-import "../Pendant/interfaces/IPhase.sol";
+import "../Pendant/interfaces/IPhase.sol"; 
 import "./interfaces/IERC20Metadata.sol";
 import "../referrals/interfaces/IReferralData.sol";
 import "./interfaces/IEventStruct.sol";
@@ -166,7 +166,7 @@ contract Vault is Synchron, ReentrancyGuard, IEventStruct {
     }
 
     function initialize(address _usdt) external {
-        require(!initialized, "has initialized");
+        require(!initialized, "init err");
         initialized = true;
 
         usdt = _usdt;
@@ -387,7 +387,7 @@ contract Vault is Synchron, ReentrancyGuard, IEventStruct {
         }
 
         if (position.size > 0 && _sizeDelta > 0) {
-            position.averagePrice = getNextAveragePrice(_indexToken, position.size, position.averagePrice, _isLong, price, _sizeDelta, position.lastIncreasedTime);
+            position.averagePrice = phase.getNextAveragePrice(_indexToken, position.size, position.averagePrice, _isLong, price, _sizeDelta, position.lastIncreasedTime);
         }
 
         (uint256 fee, uint256 feeTokens) = vaultUtils.collectMarginFees(_account, _collateralToken, _indexToken, _isLong, _sizeDelta);
@@ -426,7 +426,7 @@ contract Vault is Synchron, ReentrancyGuard, IEventStruct {
             if (globalLongSizes[_indexToken] == 0) {
                 globalLongAveragePrices[_indexToken] = price;
             } else {
-                globalLongAveragePrices[_indexToken] = getNextGlobalLongAveragePrice(_indexToken, price, _sizeDelta);
+                globalLongAveragePrices[_indexToken] = phase.getNextGlobalLongAveragePrice(_indexToken, price, _sizeDelta);
             }
             _increaseGlobalLongSize(_indexToken, _sizeDelta);
             vaultUtils.increaseUserGlobalLongSize(_account, _collateralToken, _indexToken, _sizeDelta);
@@ -434,7 +434,7 @@ contract Vault is Synchron, ReentrancyGuard, IEventStruct {
             if (globalShortSizes[_indexToken] == 0) {
                 globalShortAveragePrices[_indexToken] = price;
             } else {
-                globalShortAveragePrices[_indexToken] = getNextGlobalShortAveragePrice(_indexToken, price, _sizeDelta);
+                globalShortAveragePrices[_indexToken] = phase.getNextGlobalShortAveragePrice(_indexToken, price, _sizeDelta);
             }
 
             _increaseGlobalShortSize(_indexToken, _sizeDelta);
@@ -551,6 +551,15 @@ contract Vault is Synchron, ReentrancyGuard, IEventStruct {
             ); 
         }
 
+        dData.price =_isLong ? getMinPrice(_indexToken) : getMaxPrice(_indexToken);
+        if (_isLong) {
+            (, uint256 _globalLongAveragePrices) = slippage.getDecreasePositionNextGlobalLongShortData(dData.account, dData.collateralToken, dData.indexToken, dData.price, dData.sizeDelta, true);
+            globalLongAveragePrices[dData.indexToken] = _globalLongAveragePrices;
+        } else {
+            (, uint256 _globalShortAveragePrice) = slippage.getDecreasePositionNextGlobalLongShortData(dData.account, dData.collateralToken, dData.indexToken, dData.price, dData.sizeDelta, false);
+            globalShortAveragePrices[dData.indexToken] = _globalShortAveragePrice;
+        }
+
         uint8 _cType = cType;
         uint256 collateral = position.collateral;
 
@@ -579,16 +588,12 @@ contract Vault is Synchron, ReentrancyGuard, IEventStruct {
                 _decreaseGuaranteedUsd(rtl._indexToken, rtl._collateralToken,  rtl._sizeDelta);
             }
 
-            dData.price =_isLong ? getMinPrice(_indexToken) : getMaxPrice(_indexToken);
-
             emit UpdatePosition(key, rtl._account, rtl._collateralToken, rtl._indexToken, rtl._isLong, dData.price, position);
         } else {
             if (_isLong) {
                 _increaseGuaranteedUsd(rtl._indexToken, rtl._collateralToken,  collateral);
                 _decreaseGuaranteedUsd(rtl._indexToken, rtl._collateralToken,  rtl._sizeDelta);
             }
-
-            dData.price =_isLong ? getMinPrice(_indexToken) : getMaxPrice(_indexToken);
             
             ClosePositionEvent memory cEvent = ClosePositionEvent(
                 rtl._collateralToken, 
@@ -622,10 +627,10 @@ contract Vault is Synchron, ReentrancyGuard, IEventStruct {
             0
         );
 
-        if (!_isLong) {
-            _decreaseGlobalShortSize(rtl._account, rtl._indexToken, rtl._sizeDelta);
-        } else {
+        if (_isLong) {
             _decreaseGlobalLongSize(rtl._account, rtl._indexToken, rtl._sizeDelta);   
+        } else {
+            _decreaseGlobalShortSize(rtl._account, rtl._indexToken, rtl._sizeDelta);
         }
 
         uint256 amountOutAfterFees;
@@ -772,17 +777,11 @@ contract Vault is Synchron, ReentrancyGuard, IEventStruct {
     }
 
     function usdToTokenMax(address _token, uint256 _usdAmount) public view returns (uint256) {
-        if (_usdAmount == 0) { return 0; }
-        return usdToToken(_token, _usdAmount, getMinPrice(_token));
+        return phase.usdToToken(_token, _usdAmount, getMinPrice(_token));
     }
 
     function usdToTokenMin(address _token, uint256 _usdAmount) public view returns (uint256) {
-        if (_usdAmount == 0) { return 0; }
-        return usdToToken(_token, _usdAmount, getMaxPrice(_token));
-    }
-
-    function usdToToken(address _token, uint256 _usdAmount, uint256 _price) public view returns (uint256) {
-        return phase.usdToToken(_token, _usdAmount, _price);
+        return phase.usdToToken(_token, _usdAmount, getMaxPrice(_token));
     }
 
     function getPosition(
@@ -833,41 +832,6 @@ contract Vault is Synchron, ReentrancyGuard, IEventStruct {
         return position.size*10000/position.collateral;
     }
 
-    // for longs: nextAveragePrice = (nextPrice * nextSize)/ (nextSize + delta)
-    // for shorts: nextAveragePrice = (nextPrice * nextSize) / (nextSize - delta)
-    function getNextAveragePrice(
-        address _indexToken, 
-        uint256 _size, 
-        uint256 _averagePrice, 
-        bool _isLong, 
-        uint256 _nextPrice, 
-        uint256 _sizeDelta, 
-        uint256 _lastIncreasedTime
-    ) public view returns (uint256) {
-        return phase.getNextAveragePrice(_indexToken, _size, _averagePrice, _isLong, _nextPrice, _sizeDelta, _lastIncreasedTime);
-    }
-
-    // for longs: nextAveragePrice = (nextPrice * nextSize)/ (nextSize + delta)
-    // for shorts: nextAveragePrice = (nextPrice * nextSize) / (nextSize - delta)
-    function getNextGlobalShortAveragePrice(
-        address _indexToken, 
-        uint256 _nextPrice, 
-        uint256 _sizeDelta
-    ) public view returns (uint256) {
-        return phase.getNextGlobalShortAveragePrice(_indexToken, _nextPrice, _sizeDelta);
-    }
-
-    function getNextGlobalLongAveragePrice(
-        address _indexToken, 
-        uint256 _nextPrice, 
-        uint256 _sizeDelta
-    ) public view returns (uint256) {
-        return phase.getNextGlobalLongAveragePrice(_indexToken, _nextPrice, _sizeDelta);
-    }
-
-    function getGlobalShortDelta(address _token) public view returns (bool, uint256) {
-        return phase.getGlobalShortDelta(_token);
-    }
 
     function getPositionDelta(
         address _account, 
@@ -1247,10 +1211,6 @@ contract Vault is Synchron, ReentrancyGuard, IEventStruct {
             _isLong, 
             msg.sender
         );
-    }
-
-    function allWhitelistedTokensLength() external  view returns (uint256) {
-        return allWhitelistedTokens.length;
     }
 
     function getCoinType(address _indexToken) public  view returns(uint8) {
