@@ -766,5 +766,27 @@ contract Slippage is  Synchron, IEventStruct {
         return (hasProfit, _delta);
     }
 
+    function getPositionLeverage(
+        address _account, 
+        address _collateralToken, 
+        address _indexToken, 
+        bool _isLong
+    ) public view returns (uint256) {
+        (uint256 size, uint256 collateral,,,,,,) = IVault(vault).getPosition(_account, _collateralToken, _indexToken, _isLong);
+        require(collateral > 0, "collateral err");
+        return size * 10000 / collateral;
+    }
+
+
+    function getPositionDelta(
+        address _account, 
+        address _collateralToken, 
+        address _indexToken, 
+        bool _isLong 
+    ) public view returns (bool, uint256) {
+        (uint256 size,, uint256 averagePrice,,,,,uint256 lastIncreasedTime) = IVault(vault).getPosition(_account, _collateralToken, _indexToken, _isLong);
+        return vault.getDelta(_indexToken, size, averagePrice, _isLong, lastIncreasedTime);
+    }
+
 }  
 

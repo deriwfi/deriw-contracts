@@ -680,61 +680,76 @@ contract Vault is Synchron, ReentrancyGuard, IEventStruct {
         bytes32 key = getPositionKey(_account, _collateralToken, _indexToken, _isLong);
         Position memory position = positions[key];
         _validate(position.size > 0, 35);
-        
+    
         (uint256 liquidationState, uint256 marginFees) = validateLiquidation(_account, _collateralToken, _indexToken, _isLong, false);
         _validate(liquidationState != 0, 36);
-
-        address addr = _account;
-        if (liquidationState == 2) {
-            uint256 _size = position.size;
-            // max leverage exceeded but there is collateral remaining after deducting losses so decreasePosition instead
-            _decreasePosition(4, phase.typeCode(4),  addr, _collateralToken, _indexToken, 0, _size, _isLong, addr);
-            includeAmmPrice = true;
-            return;
-        }
-
-        uint256 feeTokens = usdToTokenMin(_collateralToken, marginFees);
-
-        _transferFee(3, phase.typeCode(3), key, _collateralToken, _account, feeTokens, _indexToken);
-        emit LiquidatePositionFee(_collateralToken, marginFees, feeTokens);
-
-        _decreaseReservedAmount(_indexToken, _collateralToken, position.reserveAmount);
-        if (_isLong) {
-            _decreaseGuaranteedUsd(_indexToken, _collateralToken,  position.size - position.collateral);
+        {
+            address addr = _account;
+            if (liquidationState == 2) {
+                uint256 _size = position.size;
+                // max leverage exceeded but there is collateral remaining after deducting losses so decreasePosition instead
+                _decreasePosition(4, phase.typeCode(4),  addr, _collateralToken, _indexToken, 0, _size, _isLong, addr);
+                includeAmmPrice = true;
+                return;
+            }
         }
 
         uint256 markPrice = _isLong ? getMinPrice(_indexToken) : getMaxPrice(_indexToken);
-        LiquidateEvent memory lEvent = LiquidateEvent(
-            key, 
-            _account, 
-            _collateralToken, 
-            _indexToken, 
-            _isLong, 
-            position.size, 
-            position.collateral, 
-            position.reserveAmount, 
-            position.realisedPnl,
-            markPrice,
-            position.averagePrice
-        );
-
-        address _cToken = _collateralToken;
-        emit LiquidatePosition(lEvent);
-
-        if (marginFees < position.collateral) {
-            uint256 remainingCollateral = position.collateral - marginFees;
-            _increasePoolAmount(_indexToken, _cToken, usdToTokenMin(_cToken, remainingCollateral));
+        {
+            if (_isLong) {
+                (, uint256 _globalLongAveragePrices) = slippage.getDecreasePositionNextGlobalLongShortData(_account, _collateralToken, _indexToken, markPrice, position.size, true);
+                globalLongAveragePrices[_indexToken] = _globalLongAveragePrices;
+            } else {
+                (, uint256 _globalShortAveragePrice) = slippage.getDecreasePositionNextGlobalLongShortData(_account, _collateralToken, _indexToken, markPrice, position.size, false);
+                globalShortAveragePrices[_indexToken] = _globalShortAveragePrice;
+            }
         }
 
-        if (!_isLong) {
-            _decreaseGlobalShortSize(_account, _indexToken, position.size);
-        } else {
-            _decreaseGlobalLongSize(_account, _indexToken, position.size);
+        {
+
+            uint256 feeTokens = usdToTokenMin(_collateralToken, marginFees);
+
+            _transferFee(3, phase.typeCode(3), key, _collateralToken, _account, feeTokens, _indexToken);
+            emit LiquidatePositionFee(_collateralToken, marginFees, feeTokens);
+
+            _decreaseReservedAmount(_indexToken, _collateralToken, position.reserveAmount);
+            if (_isLong) {
+                _decreaseGuaranteedUsd(_indexToken, _collateralToken,  position.size - position.collateral);
+            }
+
+            LiquidateEvent memory lEvent = LiquidateEvent(
+                key, 
+                _account, 
+                _collateralToken, 
+                _indexToken, 
+                _isLong, 
+                position.size, 
+                position.collateral, 
+                position.reserveAmount, 
+                position.realisedPnl,
+                markPrice,
+                position.averagePrice
+            );
+
+            address _cToken = _collateralToken;
+            emit LiquidatePosition(lEvent);
+
+            if (marginFees < position.collateral) {
+                uint256 remainingCollateral = position.collateral - marginFees;
+                _increasePoolAmount(_indexToken, _cToken, usdToTokenMin(_cToken, remainingCollateral));
+            }
+
+            if (!_isLong) {
+                _decreaseGlobalShortSize(_account, _indexToken, position.size);
+            } else {
+                _decreaseGlobalLongSize(_account, _indexToken, position.size);
+            }
+
+            delete positions[key];
+            
+
+            _liquidatePosition(_indexToken, key, _cToken, _feeReceiver);
         }
-
-        delete positions[key];
-
-        _liquidatePosition(_indexToken, key, _cToken, _feeReceiver);
     }
 
     function _liquidatePosition(address _indexToken, bytes32 _key, address _collateralToken, address _feeReceiver) internal {
@@ -820,29 +835,6 @@ contract Vault is Synchron, ReentrancyGuard, IEventStruct {
         ));
     }
 
-    function getPositionLeverage(
-        address _account, 
-        address _collateralToken, 
-        address _indexToken, 
-        bool _isLong
-    ) public view returns (uint256) {
-        bytes32 key = getPositionKey(_account, _collateralToken, _indexToken, _isLong);
-        Position memory position = positions[key];
-        _validate(position.collateral > 0, 37);
-        return position.size*10000/position.collateral;
-    }
-
-
-    function getPositionDelta(
-        address _account, 
-        address _collateralToken, 
-        address _indexToken, 
-        bool _isLong
-    ) public view returns (bool, uint256) {
-        bytes32 key = getPositionKey(_account, _collateralToken, _indexToken, _isLong);
-        Position memory position = positions[key];
-        return getDelta(_indexToken, position.size, position.averagePrice, _isLong, position.lastIncreasedTime);
-    }
 
     function getDelta(
         address _indexToken, 
@@ -856,15 +848,6 @@ contract Vault is Synchron, ReentrancyGuard, IEventStruct {
         return phase.getDelta(_indexToken, _size, _averagePrice, _isLong, _lastIncreasedTime);
     }
 
-    function getPositionFee(
-        address _account, 
-        address _collateralToken, 
-        address _indexToken, 
-        bool _isLong, 
-        uint256 _sizeDelta
-    ) public view returns (uint256) {
-        return vaultUtils.getPositionFee(_account, _collateralToken, _indexToken, _isLong, _sizeDelta);
-    }
 
     function _validatePosition(uint256 _size, uint256 _collateral) private view {
         if (_size == 0) {
