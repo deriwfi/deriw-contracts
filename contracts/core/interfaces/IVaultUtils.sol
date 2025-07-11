@@ -26,38 +26,4 @@ interface IVaultUtils is IEventStruct  {
         bool _isLong, 
         uint256 _sizeDelta
     ) external view returns (uint256, uint256);
-
-    function getOrderValue(
-        address user, 
-        bool isLong
-    ) external view returns(uint256, bool);
-
-    function getValueFor(
-        address user, 
-        bool isLong,
-        uint256 _min, 
-        uint256 num
-    ) external view returns(uint256, uint256);
-
-    function increaseUserGlobalLongSize(
-        address user, 
-        address token, 
-        address indexToken,  
-        uint256 _amount
-    ) external;
-
-    function decreaseUserGlobalLongSize(address user, uint256 _amount) external;
-    function decreaseUserGlobalShortSize(address user,  uint256 _amount) external;
-
-    function increaseUserGlobalShortSize(
-        address user, 
-        address token, 
-        address indexToken, 
-        uint256 _amount
-    ) external;
-
-    function userGlobalLongSizes(address user) external view returns(uint256);
-    function userGlobalShortSizes(address user) external view returns(uint256);
-
-
 }

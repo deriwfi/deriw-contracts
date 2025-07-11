@@ -247,7 +247,7 @@ contract Vault is Synchron, ReentrancyGuard, IEventStruct {
 
     function setMaxLeverage(uint256 _maxLeverage) external {
         _onlyGov();
-        _validate(_maxLeverage > MIN_LEVERAGE, 2);
+        _validate(_maxLeverage >= MIN_LEVERAGE && _maxLeverage <= MAX_LEVERAGE, 2);
         maxLeverage = _maxLeverage;
     }
 
@@ -429,7 +429,6 @@ contract Vault is Synchron, ReentrancyGuard, IEventStruct {
                 globalLongAveragePrices[_indexToken] = phase.getNextGlobalLongAveragePrice(_indexToken, price, _sizeDelta);
             }
             _increaseGlobalLongSize(_indexToken, _sizeDelta);
-            vaultUtils.increaseUserGlobalLongSize(_account, _collateralToken, _indexToken, _sizeDelta);
         } else {
             if (globalShortSizes[_indexToken] == 0) {
                 globalShortAveragePrices[_indexToken] = price;
@@ -438,7 +437,6 @@ contract Vault is Synchron, ReentrancyGuard, IEventStruct {
             }
 
             _increaseGlobalShortSize(_indexToken, _sizeDelta);
-            vaultUtils.increaseUserGlobalShortSize(_account, _collateralToken, _indexToken, _sizeDelta);
         }
 
         iEvent = IncreaseEvent(
@@ -1032,10 +1030,8 @@ contract Vault is Synchron, ReentrancyGuard, IEventStruct {
         }
     }
 
-    function _decreaseGlobalLongSize(address user, address _indexToken, uint256 _amount) private {
+    function _decreaseGlobalLongSize(address /*user*/, address _indexToken, uint256 _amount) private {
         uint256 size = globalLongSizes[_indexToken];
-
-        vaultUtils.decreaseUserGlobalLongSize(user, _amount);
         if (_amount > size) {
           globalLongSizes[_indexToken] = 0;
           return;
@@ -1053,9 +1049,8 @@ contract Vault is Synchron, ReentrancyGuard, IEventStruct {
         }
     }
 
-    function _decreaseGlobalShortSize(address user, address _indexToken, uint256 _amount) private {
+    function _decreaseGlobalShortSize(address /*user*/, address _indexToken, uint256 _amount) private {
         uint256 size = globalShortSizes[_indexToken];
-        vaultUtils.decreaseUserGlobalShortSize(user, _amount);
         if (_amount > size) {
           globalShortSizes[_indexToken] = 0;
           return;
@@ -1253,5 +1248,7 @@ contract Vault is Synchron, ReentrancyGuard, IEventStruct {
         _onlyGov();
         maxGlobalLongSizes[_token] = _amount;
     }
+
+    uint256 public constant MAX_LEVERAGE = 200 * 10000; // 200x;
 
 }

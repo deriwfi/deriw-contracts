@@ -366,7 +366,8 @@ contract ErrorContractV2 is IStruct {
         require(
             time >= block.timestamp &&
             fInfo.endTime > block.timestamp &&
-            time > fInfo.startTime,
+            time > fInfo.startTime &&
+            fInfo.lockEndTime > time,
             "time err"
         );
 

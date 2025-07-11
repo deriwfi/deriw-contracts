@@ -372,8 +372,7 @@ contract PositionRouter is Synchron, ReentrancyGuard, ITransferAmountData {
         address _callbackTarget
     ) external nonReentrant returns (bytes32) {
         require(_referralCode == bytes32(0), "_referralCode err");
-        require(!blackList.getBlackListAddressIsIn(msg.sender), "is blackList");
-        require(!blackList.isFusing(), "has fusing");
+        require(!blackList.isFusing() && !blackList.isStop(), "can not create");
         uint256 len = _path.length;
         require(len == 1 || len == 2, "408");
         address _pToken = _path[0];
@@ -441,6 +440,7 @@ contract PositionRouter is Synchron, ReentrancyGuard, ITransferAmountData {
         uint256 _acceptablePrice,
         address _callbackTarget
     ) external nonReentrant returns (bytes32) {
+        require(!blackList.isStop(), "can not create");
         ISlippage(IVault(vault).slippage()).validateRemoveTime(_indexToken);
         require(_path.length == 1 || _path.length == 2, "505");
         require(_path[0] == usdt, "path[0] err");
@@ -483,11 +483,6 @@ contract PositionRouter is Synchron, ReentrancyGuard, ITransferAmountData {
 
         IncreasePositionRequest memory request = _increasePositionRequests[_key];
         ISlippage(IVault(vault).slippage()).validateCreate(request.indexToken);
-
-        require(
-            !blackList.getBlackListAddressIsIn(request.account), 
-            "is blackList"
-        );
 
         bool shouldExecute = _validateExecution(request.blockNumber, request.blockTime, request.account);
         if (!shouldExecute) { return false; }

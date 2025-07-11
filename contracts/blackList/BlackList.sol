@@ -10,13 +10,12 @@ contract BlackList is Ownable {
     using EnumerableSet for EnumerableSet.AddressSet;
     
     EnumerableSet.AddressSet operators;
-    EnumerableSet.AddressSet blackListAddress;
 
     bool public isFusing;
+    bool public isStop;
 
-    event AddBlackListAddress(address indexed account);
-    event RemoveBlackListAddress(address indexed account);
     event SetFusing(bool _isFusing);    
+    event SeStop(bool _isStop);    
     event SetOperator(address _operator, bool isAdd);
 
     constructor(address _operator) {
@@ -41,13 +40,18 @@ contract BlackList is Ownable {
         emit SetOperator(_operator, isAdd);
     }
 
+    function setStop() external onlyOwner {
+        require(!isStop, "has stop");
+        isStop = true;
 
-    function setBlackList(address[] memory accounts, bool isAdd) external onlyAuth() {
-        if(isAdd) {
-            _addBlackListAddress(accounts);
-        } else {
-            _removeBlackListAddress(accounts);
-        }
+        emit SeStop(true);
+    }
+
+    function setStart() external onlyOwner {
+        require(isStop, "has start");
+        isStop = false;
+
+        emit SeStop(false);
     }
 
     function setOpenFusing() external onlyAuth {
@@ -62,36 +66,6 @@ contract BlackList is Ownable {
         isFusing = false;
 
         emit SetFusing(false);
-    }
-
-    function _addBlackListAddress(address[] memory accounts) internal {
-        for (uint256 i = 0; i < accounts.length; i++) {
-            if(!blackListAddress.contains(accounts[i])) {
-                blackListAddress.add(accounts[i]);
-                emit AddBlackListAddress(accounts[i]);
-            }
-        }
-    }
-
-    function _removeBlackListAddress(address[] memory accounts) internal  {
-        for (uint256 i = 0; i < accounts.length; i++) {
-            if(blackListAddress.contains(accounts[i])) {
-                blackListAddress.remove(accounts[i]);
-                emit RemoveBlackListAddress(accounts[i]);
-            }
-        }
-    }
-
-    function getBlackListAddressNum() external view returns(uint256) {
-        return blackListAddress.length();
-    }
-
-    function getBlackListAddress(uint256 index) external view returns(address) {
-        return blackListAddress.at(index);
-    }
-
-    function getBlackListAddressIsIn(address account) external view returns(bool) {
-        return blackListAddress.contains(account);
     }
 
     function getOperatorsLength() external view returns(uint256) {

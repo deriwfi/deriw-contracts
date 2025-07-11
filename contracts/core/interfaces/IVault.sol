@@ -145,6 +145,8 @@ interface IVault is IEventStruct {
     function usdToTokenMin(address _token, uint256 _usdAmount) external view returns (uint256);
 
     function MIN_LEVERAGE() external view returns (uint256);
+    function MAX_LEVERAGE() external view returns (uint256);
+    
     function phase() external view returns (address);
     function vaultUtils() external view returns (address);
 

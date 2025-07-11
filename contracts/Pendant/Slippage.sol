@@ -18,8 +18,11 @@ contract Slippage is  Synchron, IEventStruct {
     using SafeERC20 for IERC20;
     using EnumerableSet for EnumerableSet.AddressSet;
 
-    EnumerableSet.AddressSet indexTokens;  
+    uint256 public constant muti = 1e8;
+    uint256 public constant baseRate = 10000;
+    uint256 public constant MAX_INT256 = uint256(type(int256).max);
 
+    EnumerableSet.AddressSet indexTokens;  
     IVault public vault;
     IOrderBook public orderBook;
     ICoinData public coinData;
@@ -28,8 +31,6 @@ contract Slippage is  Synchron, IEventStruct {
     address public gov;
     address public glpManager;
 
-    uint256 public constant muti = 1e8;
-    uint256 public constant baseRate = 10000;
     uint256 public factor;
     uint256 public threshold;
     uint256 public decreaseFeeRate;
@@ -39,6 +40,7 @@ contract Slippage is  Synchron, IEventStruct {
     mapping(address => uint256) public removeNum;
     mapping(address => mapping(uint256 => RemoveShelves)) removeShelves;
     mapping(address => mapping(address => uint256)) _glpTokenSupply;
+    mapping(address => uint256) public tokenMaxLeverage;
  
     struct RemoveShelves {
         uint256 pid;
@@ -61,6 +63,12 @@ contract Slippage is  Synchron, IEventStruct {
         uint256 afterValue;
         uint256 afterFeeAccountValue;
     }
+
+    struct LeverageData{
+        address indexToken;
+        uint256 maxLeverage;
+    }
+
     event TransferTo(TransferData tData);
 
     event SetRemoveTime(
@@ -69,6 +77,8 @@ contract Slippage is  Synchron, IEventStruct {
         uint256 startTime,
         uint256 endtime
     );
+
+    event SetTokenMaxLeverage(LeverageData[] eDtata);
 
     constructor() {
         initialized = true;
@@ -122,6 +132,19 @@ contract Slippage is  Synchron, IEventStruct {
         orderBook = IOrderBook(_orderBook);
     }
     
+    function setTokenMaxLeverage(LeverageData[] memory eDtata) external onlyGov {
+        uint256 len = eDtata.length;
+        require(len > 0, "length err");
+        for(uint256 i = 0; i < len; i++) {
+            address indexToken = eDtata[i].indexToken;
+            uint256 maxLeverage = eDtata[i].maxLeverage;
+
+            require(maxLeverage >= vault.MIN_LEVERAGE() && maxLeverage <= vault.MAX_LEVERAGE(), "maxLeverage err");
+            tokenMaxLeverage[indexToken] = maxLeverage;
+        }
+
+        emit SetTokenMaxLeverage(eDtata);
+    }
     
     function setTreshold(uint256 threshold_) external onlyGov {
         require(threshold_ > 0, "threshold_ err");
@@ -364,7 +387,7 @@ contract Slippage is  Synchron, IEventStruct {
     }
 
     function getValue(
-        address user, 
+        address /*user*/, 
         address indexToken, 
         uint256 poolTotalValue,
         uint256 _poolValue,
@@ -373,30 +396,7 @@ contract Slippage is  Synchron, IEventStruct {
     ) external view returns(uint256, uint256) {
         (uint256 _min, uint256 num) = _getValue(indexToken, poolTotalValue, _poolValue, min, isLong);
 
-        if(isCheck) {
-            return IVaultUtils(vault.vaultUtils()).getValueFor(user, isLong, _min, num);
-        }
         return (_min, num);
-    }
-
-    function getMinValueFor(
-        uint256 min,
-        uint256 num,
-        uint256 maxSize, 
-        uint256 globalSizes,
-        bool isSet
-    ) public pure returns(uint256, uint256) {
-        if(isSet) {
-            if(globalSizes >= maxSize) {
-                return (0, 6);
-            } else {
-                uint256 _min = maxSize - globalSizes;
-                if(min > _min) {
-                    return (_min, 7);
-                } 
-            }
-        }
-        return (min, num); 
     }
 
     function _getValue(
@@ -465,49 +465,12 @@ contract Slippage is  Synchron, IEventStruct {
 
         size += pos.collateral;
         _sizeDelta += pos.size;
-
-        (uint256 maxLeverage, , ,) = IPhase(vault.phase()).getTokenData(user);
+        uint256 maxLeverage = getTokenMaxLeverage(indexToken);
         require(_sizeDelta * baseRate / size <= maxLeverage, "big err");
         
         validateCreate(indexToken);
 
         return true;
-    }
-
-    function validateOrderValue(
-        address user, 
-        uint256 size,
-        bool isLong
-    ) external view returns(bool) {
-        (uint256 _size, bool isSet) = getOrderValue(user, isLong);
-        if(isSet) {
-            require(size <= _size, "size err");
-        }
-
-        return true;
-    }
-
-    function getOrderValue(
-        address user, 
-        bool isLong
-    ) public view returns(uint256, bool) {
-        return  IVaultUtils(vault.vaultUtils()).getOrderValue(user, isLong);
-    }
-
-    function getMinOrderValueFor(
-        uint256 maxSize, 
-        uint256 globalSizes,
-        bool isSet
-    ) public pure returns(uint256, bool) {
-        if(isSet) {
-            if(globalSizes >= maxSize) {
-                return (0, true);
-            } else {
-                uint256 _min = maxSize - globalSizes;
-                return (_min, true);
-            }
-        }
-        return (0, false);
     }
 
     function getPhaseMinValue(address indexToken) external view returns(uint256, uint256) {
@@ -632,14 +595,7 @@ contract Slippage is  Synchron, IEventStruct {
         return indexTokens.at(index);
     }
 
-    bool public isCheck;
-    function setIsCheck(bool _isCheck) external {
-        require(msg.sender == gov || coinData.operator(msg.sender), "set err");
-        isCheck = _isCheck;
-    }
-
     // *************************************************************************
-    uint256 public constant MAX_INT256 = uint256(type(int256).max);
     function getDecreasePositionNextGlobalLongShortData(
         address _account,
         address _collateralToken,
@@ -782,11 +738,17 @@ contract Slippage is  Synchron, IEventStruct {
         address _account, 
         address _collateralToken, 
         address _indexToken, 
-        bool _isLong 
+        bool _isLong
     ) public view returns (bool, uint256) {
         (uint256 size,, uint256 averagePrice,,,,,uint256 lastIncreasedTime) = IVault(vault).getPosition(_account, _collateralToken, _indexToken, _isLong);
         return vault.getDelta(_indexToken, size, averagePrice, _isLong, lastIncreasedTime);
     }
 
+
+    function getTokenMaxLeverage(address indexToken) public view returns(uint256) {
+        uint256 maxLeverage = tokenMaxLeverage[indexToken] == 0 ? vault.maxLeverage() : tokenMaxLeverage[indexToken];
+
+        return maxLeverage;
+    }
 }  
 

@@ -40,19 +40,13 @@ interface ISlippage {
     ) external view returns (bool);
 
     function getValue(
-        address user, 
+        address /*user*/, 
         address indexToken, 
         uint256 poolTotalValue,
         uint256 _poolValue,
         uint256 min, 
         bool isLong
     ) external view returns(uint256, uint256);
-
-    function validateOrderValue(
-        address user, 
-        uint256 size,
-        bool isLong
-    ) external view returns(bool);
 
     function validateLever(
         address user,       
@@ -62,20 +56,6 @@ interface ISlippage {
         uint256 _sizeDelta,
         bool isLong
     ) external view returns(bool);
-
-    function getMinOrderValueFor(
-        uint256 maxSize, 
-        uint256 globalSizes,
-        bool isSet
-    ) external view returns(uint256, bool);
-
-    function getMinValueFor(
-        uint256 min,
-        uint256 num,
-        uint256 maxSize, 
-        uint256 globalSizes,
-        bool isSet
-    ) external view returns(uint256, uint256);
 
     function getPhaseMinValue(address indexToken) external view returns(uint256, uint256);
 
@@ -111,5 +91,7 @@ interface ISlippage {
         uint256 _sizeDelta,
         bool _isLong
     ) external view returns (uint256, uint256);
+
+    function getTokenMaxLeverage(address indexToken) external view returns(uint256);
 
 }

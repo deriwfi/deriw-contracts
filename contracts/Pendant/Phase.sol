@@ -66,15 +66,11 @@ contract Phase is Synchron, IStruct, IPhaseStruct {
     mapping(address => bool) public operator;
     mapping(uint8 => bytes32) public typeCode;
     mapping(bytes32 => uint8) public codeType;
-    mapping(address => TokenData) public tokenData;
-    mapping(address => bool) public isTokenSet;
 
     mapping(address => mapping(address => mapping(address => UserData))) userData;  
     mapping(address => mapping(address => EnumerableSet.AddressSet)) longUsers;
     mapping(address => mapping(address => EnumerableSet.AddressSet)) shortUsers;
 
-
-    event SetTokenLeverageAndMaxSize(TokenData tData);
     event SetHandler(address account, bool isAdd);
     event SetOperator(address account, bool isAdd);
 
@@ -206,16 +202,6 @@ contract Phase is Synchron, IStruct, IPhaseStruct {
 
     function setSideRate(uint256 sideRate_) external onlyGov {
         sideRate = sideRate_;
-    }
-
-    function setTokenLeverageAndMaxSize(TokenData[] memory tData) external onlyGov {
-        uint256 len = tData.length;
-        require(len > 0, "len err");
-
-        uint256 min = vault.MIN_LEVERAGE();
-        for(uint256 i = 0; i < len; i++) {
-            _setTokenLeverageAndMaxSize(tData[i], min);
-        }
     }
 
     function collectFees(
@@ -706,10 +692,6 @@ contract Phase is Synchron, IStruct, IPhaseStruct {
         vault.validate(vault.whitelistedTokens(_indexToken), 45);
     }
 
-    // function getCurrTime() external view returns(uint256) {
-    //     return block.timestamp;
-    // }
-
     // ******************************************************************************************
     function validateSizeDelta(
         address user,
@@ -868,35 +850,6 @@ contract Phase is Synchron, IStruct, IPhaseStruct {
         }
     }
 
-    // ********************************************
-    function _setTokenLeverageAndMaxSize(TokenData memory tData, uint256 min) internal {
-        require(tData.maxLeverage >= min && tData.maxLeverage <= vault.maxLeverage() , "leverage err");
-
-        tokenData[tData.user] = tData;
-        if(!isTokenSet[tData.user]) {
-            isTokenSet[tData.user] = true;
-        }
-
-        emit SetTokenLeverageAndMaxSize(tData);
-    }
-
-    function getTokenData(address user) external view returns(uint256, uint256, uint256, bool) {
-        if(isTokenSet[user]) {
-            return (
-                tokenData[user].maxLeverage, 
-                tokenData[user].maxLongSize, 
-                tokenData[user].maxShortSize,
-                isTokenSet[user]
-            );
-        }
-        
-        return (
-            vault.maxLeverage(), 
-            tokenData[user].maxLongSize, 
-            tokenData[user].maxShortSize, 
-            isTokenSet[user]
-        );
-    }
 
     //********************************************* */
     function _transferTo(address token, address account, uint256 amount) internal {

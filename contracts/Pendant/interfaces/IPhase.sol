@@ -26,8 +26,6 @@ interface IPhase is IPhaseStruct {
         uint256 _sizeDelta
     ) external view returns (uint256);
 
-    //function getNextFundingRate(address _token) external  view returns (uint256);
-
     function usdToToken(address _token, uint256 _usdAmount, uint256 _price) external view returns (uint256);
 
     function tokenToUsdMin(address _token, uint256 _tokenAmount) external  view returns (uint256);
@@ -88,9 +86,6 @@ interface IPhase is IPhaseStruct {
 
     function typeCode(uint8 cType) external view returns(bytes32);
     function codeType(bytes32 code) external view returns(uint8);
-
-    function getTokenData(address user) external view returns(uint256, uint256, uint256, bool);
-
     function getIndextokenValue(address indexToken) external view returns(uint256);
 
     function getLongShortValue(address indexToken) external view returns(int256 longValue, int256 shortValue);

@@ -18,9 +18,6 @@ contract VaultUtils is IEventStruct, Governable {
 
     uint256 public constant BASIS_POINTS_DIVISOR = 10000;
 
-    mapping (address => uint256) public userGlobalLongSizes;
-    mapping (address => uint256) public userGlobalShortSizes;
-
     struct ValidateData {
         address account; 
         address collateralToken; 
@@ -92,8 +89,7 @@ contract VaultUtils is IEventStruct, Governable {
             return (1, marginFees);
         }
 
-
-        (uint256 maxLeverage,,,) = IPhase(vault.phase()).getTokenData(_account);
+        uint256 maxLeverage = ISlippage(vault.slippage()).getTokenMaxLeverage(_indexToken);
         if (remainingCollateral.mul(maxLeverage) < position.size.mul(BASIS_POINTS_DIVISOR)) {
             if (_raise) { revert("Vault: maxLeverage exceeded"); }
             return (2, marginFees);
@@ -154,123 +150,8 @@ contract VaultUtils is IEventStruct, Governable {
 
 
     // ***************************************
-
-    function increaseUserGlobalLongSize(
-        address user, 
-        address token, 
-        address indexToken,  
-        uint256 _amount
-    ) external onlyVault {
-        userGlobalLongSizes[user] += _amount;
-
-        (
-            uint256 maxLeverage, 
-            uint256 maxSize, 
-            ,
-            bool isTokenSet
-        ) = IPhase(vault.phase()).getTokenData(user);
-
-        if (isTokenSet) {
-            require(userGlobalLongSizes[user] <= maxSize, " user total long err");
-        }
-        validate(user, token, indexToken, true, maxLeverage);   
-    }
-
-    function decreaseUserGlobalLongSize(address user, uint256 _amount) external onlyVault {
-        uint256 size = userGlobalLongSizes[user];
-        if (_amount > size) {
-          userGlobalLongSizes[user] = 0;
-          return;
-        }
-
-        userGlobalLongSizes[user] = size - _amount;
-    }
-
-    function decreaseUserGlobalShortSize(address user, uint256 _amount) external onlyVault {
-        uint256 size = userGlobalShortSizes[user];
-        if (_amount > size) {
-          userGlobalShortSizes[user] = 0;
-          return;
-        }
-
-        userGlobalShortSizes[user] = size - _amount;
-    }
-
-    function increaseUserGlobalShortSize(
-        address user, 
-        address token, 
-        address indexToken, 
-        uint256 _amount
-    ) external onlyVault {
-        userGlobalShortSizes[user] += _amount;
-        (
-            uint256 maxLeverage, 
-            , 
-            uint256 maxShortSize, 
-            bool isTokenSet
-        ) = IPhase(vault.phase()).getTokenData(user);
-
-        if (isTokenSet) {
-            require(userGlobalShortSizes[user] <= maxShortSize, "user total shorts err");
-        }
-        validate(user, token, indexToken,  false, maxLeverage);
-    }
-
-    function validate(
-        address user, 
-        address token, 
-        address indexToken, 
-        bool isLong,
-        uint256 maxLeverage
-    ) internal view returns(bool) {
-        bytes32 key = vault.getPositionKey(user, token, indexToken, isLong);
-        Position memory pos = vault.getPositionFrom(key);
-
-        require(pos.size * BASIS_POINTS_DIVISOR / pos.collateral <= maxLeverage, "maxLeverage err");
-
-        return true;
-    }
     
-    function getOrderValue(
-        address user, 
-        bool isLong
-    ) external view returns(uint256, bool) {
-        (
-            , 
-            uint256 maxLongSize, 
-            uint256 maxShortSize, 
-            bool isTokenSet
-        ) = IPhase(vault.phase()).getTokenData(user);
 
-        if(isLong) {
-            return ISlippage(vault.slippage()).getMinOrderValueFor(maxLongSize, userGlobalLongSizes[user], isTokenSet);
-        } else {
-            return ISlippage(vault.slippage()).getMinOrderValueFor(maxShortSize, userGlobalShortSizes[user], isTokenSet);
-        }
-    }
-
-    function getValueFor(
-        address user, 
-        bool isLong,
-        uint256 _min, 
-        uint256 num
-    ) external view returns(uint256, uint256) {
-        ISlippage slippage =  ISlippage(vault.slippage());
-
-        (
-            , 
-            uint256 maxLongSize, 
-            uint256 maxShortSize, 
-            bool isTokenSet
-        ) = IPhase(vault.phase()).getTokenData(user);
-        address _user = user;
-
-        if(isLong) {
-            return slippage.getMinValueFor(_min, num, maxLongSize, userGlobalLongSizes[_user], isTokenSet);
-        } else {
-            return slippage.getMinValueFor(_min, num, maxShortSize,  userGlobalShortSizes[_user], isTokenSet);
-        }
-    }
 
     function batchValidateLiquidation(ValidateData[] memory vData) external view  returns (ValidateData[] memory) {
         uint256 len = vData.length;

@@ -42,6 +42,12 @@ contract OrderBook is Synchron, ReentrancyGuard, IOStruct, IOrderStruct {
     mapping (address => uint256) public decreaseOrdersIndex;
     mapping (address => bool) public isPositionKeeper;
 
+    struct CancelOrder {
+        address user;
+        uint256[] increaseOrderIndexes;
+        uint256[] decreaseOrderIndexes;
+    } 
+
     event ExecuteIncreaseOrderEvent(
         uint256 orderIndex,
         address from, 
@@ -284,8 +290,7 @@ contract OrderBook is Synchron, ReentrancyGuard, IOStruct, IOrderStruct {
         bool _triggerAboveThreshold,
         uint256 _lever
     ) external  nonReentrant {
-        require(!blackList.getBlackListAddressIsIn(msg.sender), "is blackList");
-        require(!blackList.isFusing(), "has fusing");
+        require(!blackList.isFusing() && !blackList.isStop(), "can not create");
         require(_triggerPrice > 0, "_triggerPrice err");
         if(_amountIn == 0 && _sizeDelta == 0) {
             revert("value err");
@@ -336,7 +341,7 @@ contract OrderBook is Synchron, ReentrancyGuard, IOStruct, IOrderStruct {
         address user,
         uint256[] memory _increaseOrderIndexes,
         uint256[] memory _decreaseOrderIndexes
-    ) external {
+    ) public {
         for (uint256 i = 0; i < _increaseOrderIndexes.length; i++) {
             cancelIncreaseOrderFor(user, _increaseOrderIndexes[i]);
         }
@@ -345,8 +350,17 @@ contract OrderBook is Synchron, ReentrancyGuard, IOStruct, IOrderStruct {
         }
     }
 
+    function cancelMultipleAccountOrder(
+        CancelOrder[] memory _cancelOrder
+    ) external {
+        uint256 len = _cancelOrder.length;
+        for(uint256 i = 0; i < len; i++) {
+            CancelOrder memory cOrder = _cancelOrder[i];
+            cancelMultipleFor(cOrder.user, cOrder.increaseOrderIndexes, cOrder.decreaseOrderIndexes);
+        }
+    }
 
-    function cancelIncreaseOrderFor(address user, uint256 _orderIndex) public onlyCancel {
+    function cancelIncreaseOrderFor(address user, uint256 _orderIndex) public onlyPositionKeeper {
         IncreaseOrder memory order = increaseOrders[user][_orderIndex];
         if(order.account != address(0)) {
             _cancelIncreaseOrder(user, _orderIndex);
@@ -364,10 +378,6 @@ contract OrderBook is Synchron, ReentrancyGuard, IOStruct, IOrderStruct {
         require(order.account != address(0), "OrderBook: non-existent order");
 
         ISlippage(IVault(vault).slippage()).validateCreate(order.indexToken);
-        require(
-            !blackList.getBlackListAddressIsIn(order.account), 
-            "is blackList"
-        );
 
         (uint256 currentPrice, ) = validatePositionOrderPrice(
             order.triggerAboveThreshold,
@@ -426,6 +436,7 @@ contract OrderBook is Synchron, ReentrancyGuard, IOStruct, IOrderStruct {
         if(_collateralDelta == 0 && _sizeDelta == 0) {
             revert("value err");
         }
+        require(!blackList.isStop(), "can not create");
 
         if(_sizeDelta > 0) {
             (uint256 size,,,,,,,) = IVault(vault).getPosition(msg.sender, usdt, _indexToken, _isLong);
@@ -523,7 +534,7 @@ contract OrderBook is Synchron, ReentrancyGuard, IOStruct, IOrderStruct {
         }
     }
 
-    function cancelDecreaseOrderFor(address user, uint256 _orderIndex) public onlyCancel() {
+    function cancelDecreaseOrderFor(address user, uint256 _orderIndex) public onlyPositionKeeper() {
         DecreaseOrder memory order = decreaseOrders[user][_orderIndex];
         if(order.account != address(0)) {
             _cancelDecreaseOrder(user, _orderIndex);
