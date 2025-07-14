@@ -30,8 +30,8 @@ contract GlpManager is ReentrancyGuard, Governable, IGlpManager {
 
     address public override glp;
     address public usdt;
+    address public immutable glpRewardRouter;
 
-    mapping (address => bool) public isHandler;
     mapping (address => uint256) public lastAddedAt;
    
     event AddLiquidity(
@@ -74,13 +74,16 @@ contract GlpManager is ReentrancyGuard, Governable, IGlpManager {
     );
 
     constructor(
+        address _glpRewardRouter,
         address _vault, 
         address _glp, 
         uint256 _cooldownDuration
     ) {
-        require(_vault != address(0) && _glp != address(0), "addr err");
+        require(_vault != address(0) && _glp != address(0) && _glpRewardRouter  != address(0), "addr err");
 
         gov = msg.sender;
+
+        glpRewardRouter = _glpRewardRouter;
         vault = IVault(_vault);
         glp = _glp;
         cooldownDuration = _cooldownDuration;
@@ -104,12 +107,6 @@ contract GlpManager is ReentrancyGuard, Governable, IGlpManager {
         foundReader = IFundReader(_foundReader);
         phase = IPhase(_phase);
         slippage = ISlippage(_slippage);
-    }
-
-    function setHandler(address _handler, bool _isActive) external onlyGov {
-        require(_handler != address(0), "_handler err");
-
-        isHandler[_handler] = _isActive;
     }
 
     function setCooldownDuration(uint256 _cooldownDuration) external override onlyGov {
@@ -216,6 +213,6 @@ contract GlpManager is ReentrancyGuard, Governable, IGlpManager {
     }
 
     function _validateHandler() private view {
-        require(isHandler[msg.sender], "GlpManager: forbidden");
+        require(msg.sender == glpRewardRouter, "GlpManager: forbidden");
     }
 }

@@ -248,7 +248,7 @@ contract UserL2ToL3Router is Synchron, ReentrancyGuard {
 
 
     function setFeeRate(uint256 _rate) external onlyGov() {
-        require(_rate < BASERATE, "rate err");
+        require(_rate <= 2000, "rate err");
 
         feeRate = _rate;
     }
@@ -270,7 +270,7 @@ contract UserL2ToL3Router is Synchron, ReentrancyGuard {
             address token = mRate[i].token;
             uint256 rate = mRate[i].minFeeAmount;
 
-            require(rate < BASERATE, "rate err");
+            require(rate <= 2000, "rate err");
             tokenRate[token] = rate;
             if(!isSetRate[token]) {
                 isSetRate[token] = true;

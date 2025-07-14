@@ -113,7 +113,7 @@ contract CoinData is Synchron, IStruct, IPhaseStruct {
         if(isAdd) {
             for(uint256 i = 0; i < len; i++) {
                 address token = _coins[i];
-                require(!coins[id][num].contains(token), "add err");
+                require(!coins[id][num].contains(token) && !periodToken[id][num].contains(token), "add err");
                 coins[id][num].add(token);
 
                 _setAdd(token);
