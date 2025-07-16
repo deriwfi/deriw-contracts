@@ -483,6 +483,7 @@ contract PositionRouter is Synchron, ReentrancyGuard, ITransferAmountData {
 
         IncreasePositionRequest memory request = _increasePositionRequests[_key];
         ISlippage(IVault(vault).slippage()).validateCreate(request.indexToken);
+        phase.validateSizeDelta(request.account, request.indexToken, request.sizeDelta, request.isLong);
 
         bool shouldExecute = _validateExecution(request.blockNumber, request.blockTime, request.account);
         if (!shouldExecute) { return false; }

@@ -378,6 +378,7 @@ contract OrderBook is Synchron, ReentrancyGuard, IOStruct, IOrderStruct {
         require(order.account != address(0), "OrderBook: non-existent order");
 
         ISlippage(IVault(vault).slippage()).validateCreate(order.indexToken);
+        IPhase(IVault(vault).phase()).validateSizeDelta(_address, order.indexToken, order.sizeDelta, order.isLong);
 
         (uint256 currentPrice, ) = validatePositionOrderPrice(
             order.triggerAboveThreshold,
