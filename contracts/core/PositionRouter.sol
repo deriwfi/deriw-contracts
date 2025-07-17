@@ -448,13 +448,12 @@ contract PositionRouter is Synchron, ReentrancyGuard, ITransferAmountData {
             require(_path[1] == usdt, "path[1] err");
         }
 
-        (,uint256 collateral,,,,,,) = IVault(vault).getPosition(msg.sender, usdt, _indexToken, _isLong);
+        (uint256 size, uint256 collateral,,,,,,) = IVault(vault).getPosition(msg.sender, usdt, _indexToken, _isLong);
         if((_collateralDelta == 0 && _sizeDelta == 0) || collateral == 0) {
             revert("value err");
         }
 
         if(_sizeDelta > 0) {
-            (uint256 size,,,,,,,) = IVault(vault).getPosition(msg.sender, usdt, _indexToken, _isLong);
             uint256 minAmountToUsdAmount = IVault(vault).tokenToUsdMin(usdt, minAmount);
 
             require(

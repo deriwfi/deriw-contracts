@@ -10,7 +10,7 @@ contract GLP is ERC20 {
     address public gov;
     mapping (address => bool) public isMinter;
 
-    constructor () ERC20("Deriw LP", "DLP") {
+    constructor () ERC20("DeriW LP", "DLP") {
         gov = msg.sender;
     }
     
