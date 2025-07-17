@@ -438,9 +438,11 @@ contract OrderBook is Synchron, ReentrancyGuard, IOStruct, IOrderStruct {
             revert("value err");
         }
         require(!blackList.isStop(), "can not create");
-
+        (uint256 size,uint256 collateral,,,,,,) = IVault(vault).getPosition(msg.sender, usdt, _indexToken, _isLong);
+        if(collateral == 0) {
+            revert("can not create");
+        }
         if(_sizeDelta > 0) {
-            (uint256 size,,,,,,,) = IVault(vault).getPosition(msg.sender, usdt, _indexToken, _isLong);
             uint256 minAmountToUsdAmount = IVault(vault).tokenToUsdMin(usdt, minAmount);
             require(
                 (_sizeDelta >= minAmountToUsdAmount || _sizeDelta == size), 
