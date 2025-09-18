@@ -13,6 +13,7 @@ import "../core/interfaces/IEventStruct.sol";
 import "../core/interfaces/IOrderBook.sol";
 import "./interfaces/ICoinData.sol";
 import "../upgradeability/Synchron.sol";
+import "../core/interfaces/IDataReader.sol";
 
 contract Slippage is  Synchron, IEventStruct {
     using SafeERC20 for IERC20;
@@ -164,6 +165,8 @@ contract Slippage is  Synchron, IEventStruct {
         uint8 _type = coinData.getCoinType(indexToken);
         if(_type == 1) {
             indexTokens.add(indexToken);
+        } else {
+            memeIndexTokens.add(indexToken);
         }
     }
 
@@ -179,87 +182,25 @@ contract Slippage is  Synchron, IEventStruct {
         bool _isLong, 
         address _feeAccount
     ) external {
-        require(orderBook.cancelAccount() == msg.sender && _feeAccount != address(0), "auto err");
-        uint256 endtime = getEndTime(_indexToken);
-
-        require(
-            coinData.lastTime(_indexToken) < endtime &&
-            block.timestamp > endtime &&
-            endtime != 0, 
-            "auto err"
-        );
-        
-        uint256 amount = vault.autoDecreasePosition(_account, _collateralToken, _indexToken, _isLong);
-        uint256 fee = amount * decreaseFeeRate / baseRate;
-        uint256 _afterFee = amount - fee;
-        
-        TransferData memory tData = TransferData(
-            _collateralToken,
-            address(this),
-            _account,
-            _feeAccount,
-            _afterFee,
-            fee,
-            0,
-            0,
-            0,
-            0,
-            0,
-            0  
-        );
-
-        tData.beforeSliAmount = getAmount(_collateralToken, address(this));
-        tData.beforeValue = getAmount(_collateralToken, _account);
-        tData.beforeFeeAccountValue = getAmount(_collateralToken, _feeAccount);
-
-        if(fee > 0) {
-            IERC20(_collateralToken).safeTransfer(_feeAccount, fee);
-        }
-
-        if(_afterFee > 0) {
-            IERC20(_collateralToken).safeTransfer(_account, _afterFee);
-        }
-
-        tData.afterSliAmount = getAmount(_collateralToken, address(this));
-        tData.afterValue = getAmount(_collateralToken, tData.account);
-        tData.afterFeeAccountValue = getAmount(_collateralToken, _feeAccount);
-
-        emit TransferTo(tData);
+        validate();
+        _autoDecreasePosition(_account, _collateralToken, _indexToken, _feeAccount, _isLong);
     }
 
     
     function addGlpAmount(address _indexToken, address _collateralToken, uint256 _amount) external onlyGlpManager {
-        // value == 1 Indicating that it is the indexToken set in the CoinData contract or USDT address
-        // value == 2 Indicating that it is the indexToken set in the MemeFactory contract(meme token)
-        // There are only two situations on this dex: 1 and 2        
-        if(coinData.getCoinType(_indexToken) == 1) {
-            _glpTokenSupply[_collateralToken][_collateralToken] += _amount;
-        } else {
-            _glpTokenSupply[_indexToken][_collateralToken] += _amount;
-        }
+        _indexToken = dataReader.getTargetIndexToken(_indexToken);
+        _glpTokenSupply[_indexToken][_collateralToken] += _amount;
     }
 
-    function subGlpAmount(address _indexToken, address _collateralToken, uint256 _amount) external onlyGlpManager {        
-        // value == 1 Indicating that it is the indexToken set in the CoinData contract or USDT address
-        // value == 2 Indicating that it is the indexToken set in the MemeFactory contract(meme token)
-        // There are only two situations on this dex: 1 and 2
-        if(coinData.getCoinType(_indexToken) == 1) {
-            _glpTokenSupply[_collateralToken][_collateralToken] -= _amount;
-        } else {
-            _glpTokenSupply[_indexToken][_collateralToken] -= _amount;
-        }
+    function subGlpAmount(address _indexToken, address _collateralToken, uint256 _amount) external onlyGlpManager {              
+        _indexToken = dataReader.getTargetIndexToken(_indexToken);
+        _glpTokenSupply[_indexToken][_collateralToken] -= _amount;
     }
 
     function glpTokenSupply(address _indexToken, address _collateralToken) external view returns(uint256) {
-        // value == 1 Indicating that it is the indexToken set in the CoinData contract or USDT address
-        // value == 2 Indicating that it is the indexToken set in the MemeFactory contract(meme token)
-        // There are only two situations on this dex: 1 and 2
-        // If other tokens are transferred, there will be zero returned        
-        if(coinData.getCoinType(_indexToken) == 1) {
-           return _glpTokenSupply[_collateralToken][_collateralToken];
-        } else {
-           return _glpTokenSupply[_indexToken][_collateralToken];
-        }
+        _indexToken = dataReader.getTargetIndexToken(_indexToken);
+             
+        return _glpTokenSupply[_indexToken][_collateralToken];
     }
 
     // **********************************************************************
@@ -502,9 +443,10 @@ contract Slippage is  Synchron, IEventStruct {
 
     function validateRemoveTime(address token) external view returns(bool) {
         uint256 endtime = getEndTime(token);
+        (,,uint256 lastTime,) = coinData.getTokenInfo(token);
         if(endtime != 0) {
             require(
-                coinData.lastTime(token) > endtime ||
+                lastTime > endtime ||
                 block.timestamp < endtime, 
                 "has rmove  shelves"
             );
@@ -514,11 +456,12 @@ contract Slippage is  Synchron, IEventStruct {
 
     function validateCreate(address token) public view returns(bool) {
         (uint256 startTime, uint256 endtime) = getRemoveTime(token);
+        (,,uint256 lastTime,) = coinData.getTokenInfo(token);
         if(startTime != 0) {
             require(
-                coinData.lastTime(token) > endtime ||
+                lastTime > endtime ||
                 block.timestamp < startTime, 
-                "has rmove  shelves"
+                "has rmove shelves"
             );
         }
 
@@ -540,23 +483,7 @@ contract Slippage is  Synchron, IEventStruct {
         uint256 startTime,
         uint256 endTime
     ) external onlyGov {
-        require(
-            startTime > block.timestamp && 
-            startTime < endTime, 
-            "time err"
-        );
-        (uint256 pid, uint256 num) = coinData.getPidNum();
-        require(
-            coinData.getPeriodTokenContains(pid, num, token) ||
-            coinData.getCoinContains(pid, num, token), 
-            "token err"
-        );
-
-        uint256 rNum = ++removeNum[token];
-        removeShelves[token][rNum].endtime = endTime;
-        removeShelves[token][rNum].startTime = startTime;
-
-        emit SetRemoveTime(token, rNum, startTime, endTime);
+        _setRemoveTime(token, startTime, endTime);
     }
 
     function getCurrRemoveShelves(
@@ -572,19 +499,13 @@ contract Slippage is  Synchron, IEventStruct {
         return removeShelves[token][rNum];
     }
 
+
     function getSizeData(address indexToken) public view returns(
         uint256 globalShortSizes,
         uint256 globalLongSizes,
         uint256 totalSize
     ) {
-        (uint256 pid, uint256 num) = coinData.getPidNum();
-        if(coinData.getCoinContains(pid, num, indexToken)) {
-           return coinData.getSizeData(address(vault));
-        } else {
-            globalShortSizes = vault.globalShortSizes(indexToken);
-            globalLongSizes = vault.globalLongSizes(indexToken);
-            totalSize = globalShortSizes + globalLongSizes;
-        }
+        (globalShortSizes, globalLongSizes, totalSize) = coinData.getSizeData(indexToken);
     }
 
     function getIndexTokensLength() external view returns(uint256) {
@@ -750,5 +671,158 @@ contract Slippage is  Synchron, IEventStruct {
 
         return maxLeverage;
     }
+
+    // *****************************************************
+    IDataReader public dataReader;
+    EnumerableSet.AddressSet memeIndexTokens;  
+
+    struct RemoveToken {
+        address token;
+        uint256 startTime;
+        uint256 endTime;
+    }
+
+    struct AutoStruct {
+        address account;
+        address collateralToken;
+        address indexToken;
+        address feeAccount;
+        bool isLong;
+    }
+
+    function setDataReader(address _dataReader) external onlyGov {
+        require(_dataReader != address(0), "_dataReader err");
+        dataReader = IDataReader(_dataReader);
+    }
+
+    function batchSetRemoveTime(RemoveToken[] memory removeToken) external {
+        validate();
+        uint256 len = removeToken.length;
+        require(len > 0, "length err");
+
+        for(uint256 i = 0; i < len; i++) {
+            _setRemoveTime(removeToken[i].token, removeToken[i].startTime, removeToken[i].endTime);
+        }
+    }
+
+    function batchAutoDecreasePosition(
+        AutoStruct[] memory autoData
+    ) external {
+        validate();
+        uint256 len = autoData.length;
+        require(len > 0, "length err");
+        for(uint256 i = 0; i < len; i++) {
+            _autoDecreasePosition(
+                autoData[i].account, 
+                autoData[i].collateralToken, 
+                autoData[i].indexToken, 
+                autoData[i].feeAccount, 
+                autoData[i].isLong
+            );
+        }
+    }
+
+    function _setRemoveTime(
+        address token,
+        uint256 startTime,
+        uint256 endTime
+    ) internal {
+        uint256 num = removeNum[token];
+        if(removeShelves[token][num].startTime > block.timestamp || removeShelves[token][num].startTime == 0) {
+            require(
+                startTime >= block.timestamp && 
+                startTime < endTime, 
+                "time err"
+            );
+        } else {
+            require(
+                (removeShelves[token][num].endtime > block.timestamp || removeShelves[token][num].endtime == 0) &&
+                startTime == removeShelves[token][num].startTime && 
+                endTime > block.timestamp, 
+                "time err"
+            );
+        }
+
+        require(coinData.getTokenIsCanRemove(token), "token err");
+
+        uint256 rNum = ++removeNum[token];
+        removeShelves[token][rNum].endtime = endTime;
+        removeShelves[token][rNum].startTime = startTime;
+
+        emit SetRemoveTime(token, rNum, startTime, endTime);
+    }
+
+
+    function _autoDecreasePosition(
+        address _account, 
+        address _collateralToken, 
+        address _indexToken, 
+        address _feeAccount,
+        bool _isLong
+    ) internal {
+        uint256 endtime = getEndTime(_indexToken);
+
+        (,,uint256 lastTime,) = coinData.getTokenInfo(_indexToken);
+        require(
+            lastTime < endtime &&
+            block.timestamp > endtime &&
+            endtime != 0, 
+            "auto err"
+        );
+        
+        uint256 amount = vault.autoDecreasePosition(_account, _collateralToken, _indexToken, _isLong);
+        uint256 fee = amount * decreaseFeeRate / baseRate;
+        uint256 _afterFee = amount - fee;
+        
+        TransferData memory tData = TransferData(
+            _collateralToken,
+            address(this),
+            _account,
+            _feeAccount,
+            _afterFee,
+            fee,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0  
+        );
+
+        tData.beforeSliAmount = getAmount(_collateralToken, address(this));
+        tData.beforeValue = getAmount(_collateralToken, _account);
+        tData.beforeFeeAccountValue = getAmount(_collateralToken, _feeAccount);
+
+        if(fee > 0) {
+            IERC20(_collateralToken).safeTransfer(_feeAccount, fee);
+        }
+
+        if(_afterFee > 0) {
+            IERC20(_collateralToken).safeTransfer(_account, _afterFee);
+        }
+
+        tData.afterSliAmount = getAmount(_collateralToken, address(this));
+        tData.afterValue = getAmount(_collateralToken, tData.account);
+        tData.afterFeeAccountValue = getAmount(_collateralToken, _feeAccount);
+
+        emit TransferTo(tData);
+    }
+
+    function validate() internal view {
+        require(
+            orderBook.cancelAccount() == msg.sender ||
+            orderBook.isPositionKeeper(msg.sender),
+            "no permission"
+        );
+    }
+
+    function getMemeIndexTokensLength() external view returns(uint256) {
+        return memeIndexTokens.length();
+    }
+
+    function getMemeIndexToken(uint256 index) external view returns(address) {
+        return memeIndexTokens.at(index);
+    }
+
 }  
 

@@ -16,6 +16,7 @@ import "../referrals/interfaces/IReferralData.sol";
 import "./interfaces/IEventStruct.sol";
 import "../upgradeability/Synchron.sol";
 import "../Pendant/interfaces/ICoinData.sol";
+import "./interfaces/IDataReader.sol";
 
 contract Vault is Synchron, ReentrancyGuard, IEventStruct {
     using SafeMath for uint256;
@@ -340,19 +341,11 @@ contract Vault is Synchron, ReentrancyGuard, IEventStruct {
     ) external onlyWhitelistedToken(_indexToken)  nonReentrant {
         _validateManager();
 
-        // value == 1 Indicating that it is the indexToken set in the CoinData contract or USDT address
-        //  value == 2 Indicating that it is the indexToken set in the MemeFactory contract(meme token)
-        // There are only two situations on this dex: 1 and 2
-        if(getCoinType(_indexToken) == 1) {
-            _poolAmounts[_collateralToken][_collateralToken] -= _amount;
-            emit DecreasePoolAmount(_collateralToken, _collateralToken, _amount);
-        } else {
-            _poolAmounts[_indexToken][_collateralToken] -= _amount;
-            emit DecreasePoolAmount(_indexToken, _collateralToken, _amount);
-        }
-
+        _indexToken = dataReader().getTargetIndexToken(_indexToken);
+        _poolAmounts[_indexToken][_collateralToken] -= _amount;
+        emit DecreasePoolAmount(_indexToken, _collateralToken, _amount);
+        
         _transferOut(_indexToken, _collateralToken, _amount, _receiver);
-
 
         emit TransferOut(_collateralToken, _receiver, _amount);
     }
@@ -892,14 +885,9 @@ contract Vault is Synchron, ReentrancyGuard, IEventStruct {
     }
  
     function _transferIn(address _indexToken, address _collateralToken, uint256 _amount) private {
-        // value == 1 Indicating that it is the indexToken set in the CoinData contract or USDT address
-        // value == 2 Indicating that it is the indexToken set in the MemeFactory contract(meme token)
-        // There are only two situations on this dex: 1 and 2
-        if(getCoinType(_indexToken) == 1) {
-            _tokenBalances[_collateralToken][_collateralToken] += _amount;
-        } else {
-            _tokenBalances[_indexToken][_collateralToken] += _amount;
-        }
+        _indexToken = dataReader().getTargetIndexToken(_indexToken);
+
+        _tokenBalances[_indexToken][_collateralToken] += _amount;
     }
 
     function _transferOut(
@@ -908,14 +896,7 @@ contract Vault is Synchron, ReentrancyGuard, IEventStruct {
         uint256 _amount, 
         address _receiver
     ) private returns(TransferAmountData memory tData) {
-        // value == 1 Indicating that it is the indexToken set in the CoinData contract or USDT address
-        // value == 2 Indicating that it is the indexToken set in the MemeFactory contract(meme token)
-        // There are only two situations on this dex: 1 and 2
-        if(getCoinType(_indexToken)== 1) {
-            _tokenBalances[_collateralToken][_collateralToken] -= _amount;
-        } else {
-            _tokenBalances[_indexToken][_collateralToken] -= _amount;
-        }
+        _indexToken = dataReader().getTargetIndexToken(_indexToken);
         
         if(_amount > 0) {
             tData.beforeAmount = getAmount(_collateralToken, address(this));
@@ -927,98 +908,52 @@ contract Vault is Synchron, ReentrancyGuard, IEventStruct {
     }
 
     function _increasePoolAmount(address _indexToken, address _collateralToken, uint256 _amount) private {
-        // value == 1 Indicating that it is the indexToken set in the CoinData contract or USDT address
-        // value == 2 Indicating that it is the indexToken set in the MemeFactory contract(meme token)
-        // There are only two situations on this dex: 1 and 2
-        if(getCoinType(_indexToken)== 1) {
-            _poolAmounts[_collateralToken][_collateralToken] += _amount;
-            emit IncreasePoolAmount(_collateralToken, _collateralToken, _amount);
-        } else {
-            _poolAmounts[_indexToken][_collateralToken] += _amount;
-            emit IncreasePoolAmount(_indexToken, _collateralToken, _amount);
-        }
+        _indexToken = dataReader().getTargetIndexToken(_indexToken);
+
+        _poolAmounts[_indexToken][_collateralToken] += _amount;
+        emit IncreasePoolAmount(_indexToken, _collateralToken, _amount);
+        
     }
 
     function _decreasePoolAmount(address _indexToken, address _collateralToken, uint256 _amount) private {
-        // value == 1 Indicating that it is the indexToken set in the CoinData contract or USDT address
-        // value == 2 Indicating that it is the indexToken set in the MemeFactory contract(meme token)
-        // There are only two situations on this dex: 1 and 2
-        if(getCoinType(_indexToken)== 1) {
-            if(_poolAmounts[_collateralToken][_collateralToken] < _amount) {
-                revert();
-            }
-            _poolAmounts[_collateralToken][_collateralToken] -= _amount;
-            _validate(_reservedAmounts[_collateralToken][_collateralToken] <= _poolAmounts[_collateralToken][_collateralToken]  * multiplier / 10000, 50);
-            emit DecreasePoolAmount(_collateralToken, _collateralToken, _amount);
-        } else {
-            if(_poolAmounts[_indexToken][_collateralToken] < _amount) {
-                revert();
-            }
+        _indexToken = dataReader().getTargetIndexToken(_indexToken);
 
-            _poolAmounts[_indexToken][_collateralToken] -= _amount;
-            _validate(_reservedAmounts[_indexToken][_collateralToken] <= _poolAmounts[_indexToken][_collateralToken]  * multiplier / 10000, 50);
-            emit DecreasePoolAmount(_indexToken, _collateralToken, _amount);
+        if(_poolAmounts[_indexToken][_collateralToken] < _amount) {
+            revert();
         }
 
+        _poolAmounts[_indexToken][_collateralToken] -= _amount;
+        _validate(_reservedAmounts[_indexToken][_collateralToken] <= _poolAmounts[_indexToken][_collateralToken]  * multiplier / 10000, 50);
+        emit DecreasePoolAmount(_indexToken, _collateralToken, _amount);
     }
 
     function _increaseReservedAmount(address _indexToken, address _collateralToken, uint256 _amount) private {
-        // value == 1 Indicating that it is the indexToken set in the CoinData contract or USDT address
-        // value == 2 Indicating that it is the indexToken set in the MemeFactory contract(meme token)
-        // There are only two situations on this dex: 1 and 2
-        if(getCoinType(_indexToken)== 1) {
-            _reservedAmounts[_collateralToken][_collateralToken] +=_amount;
-            _validate(_reservedAmounts[_collateralToken][_collateralToken] <= _poolAmounts[_collateralToken][_collateralToken] * multiplier / 10000, 52);
-            emit IncreaseReservedAmount(_collateralToken, _collateralToken, _amount);
-        } else {
-            _reservedAmounts[_indexToken][_collateralToken] +=_amount;
-            _validate(_reservedAmounts[_indexToken][_collateralToken] <= _poolAmounts[_indexToken][_collateralToken] * multiplier / 10000, 52);
-            emit IncreaseReservedAmount(_indexToken, _collateralToken, _amount);
-        }
+        _indexToken = dataReader().getTargetIndexToken(_indexToken);
+        _reservedAmounts[_indexToken][_collateralToken] +=_amount;
+
+        _validate(_reservedAmounts[_indexToken][_collateralToken] <= _poolAmounts[_indexToken][_collateralToken] * multiplier / 10000, 52);
+        emit IncreaseReservedAmount(_indexToken, _collateralToken, _amount);   
     }
 
     function _decreaseReservedAmount(address _indexToken, address _collateralToken, uint256 _amount) private {
-        // value == 1 Indicating that it is the indexToken set in the CoinData contract or USDT address
-        // value == 2 Indicating that it is the indexToken set in the MemeFactory contract(meme token)
-        // There are only two situations on this dex: 1 and 2
-        if(getCoinType(_indexToken)== 1) {
-            _reservedAmounts[_collateralToken][_collateralToken] -= _amount;
-            emit DecreaseReservedAmount(_collateralToken, _collateralToken, _amount);
-        } else {
-            _reservedAmounts[_indexToken][_collateralToken] -= _amount;
-            emit DecreaseReservedAmount(_indexToken, _collateralToken, _amount);
-        }
+        _indexToken = dataReader().getTargetIndexToken(_indexToken);
+        _reservedAmounts[_indexToken][_collateralToken] -= _amount;
+
+        emit DecreaseReservedAmount(_indexToken, _collateralToken, _amount);
     }
 
     function _increaseGuaranteedUsd(address _indexToken, address _collateralToken,  uint256 _usdAmount) private {        
-        // value == 1 Indicating that it is the indexToken set in the CoinData contract or USDT address
-        // value == 2 Indicating that it is the indexToken set in the MemeFactory contract(meme token)
-        // There are only two situations on this dex: 1 and 2
-        if(getCoinType(_indexToken)== 1) {
-            _guaranteedUsd[_collateralToken][_collateralToken] += _usdAmount;
+        _indexToken = dataReader().getTargetIndexToken(_indexToken);
+        _guaranteedUsd[_indexToken][_collateralToken] += _usdAmount;
         
-            emit IncreaseGuaranteedUsd(_collateralToken, _collateralToken, _usdAmount);
-        } else {
-            _guaranteedUsd[_indexToken][_collateralToken] += _usdAmount;
-        
-            emit IncreaseGuaranteedUsd(_indexToken, _collateralToken, _usdAmount);
-        }
-
+        emit IncreaseGuaranteedUsd(_indexToken, _collateralToken, _usdAmount);
     }
 
     function _decreaseGuaranteedUsd(address _indexToken, address _collateralToken, uint256 _usdAmount) private {
-        // value == 1 Indicating that it is the indexToken set in the CoinData contract or USDT address
-        // value == 2 Indicating that it is the indexToken set in the MemeFactory contract(meme token)
-        // There are only two situations on this dex: 1 and 2
-        if(getCoinType(_indexToken)== 1) {
-            _guaranteedUsd[_collateralToken][_collateralToken] -= _usdAmount;
+        _indexToken = dataReader().getTargetIndexToken(_indexToken);
+        _guaranteedUsd[_indexToken][_collateralToken] -= _usdAmount;
 
-            emit DecreaseGuaranteedUsd(_collateralToken, _collateralToken, _usdAmount);
-        } else {
-            _guaranteedUsd[_indexToken][_collateralToken] -= _usdAmount;
-
-            emit DecreaseGuaranteedUsd(_indexToken, _collateralToken, _usdAmount);
-        }
+        emit DecreaseGuaranteedUsd(_indexToken, _collateralToken, _usdAmount);
     }
 
     function _increaseGlobalLongSize(address _indexToken, uint256 _amount) internal {
@@ -1195,52 +1130,21 @@ contract Vault is Synchron, ReentrancyGuard, IEventStruct {
         return ICoinData(IPhase(phase).coinData()).getCoinType(_indexToken);
     }
     
+
     function poolAmounts(address _indexToken, address _collateralToken) external view returns(uint256) {
-        // value == 1 Indicating that it is the indexToken set in the CoinData contract or USDT address
-        // value == 2 Indicating that it is the indexToken set in the MemeFactory contract(meme token)
-        // There are only two situations on this dex: 1 and 2
-        // If other tokens are transferred, there will be zero returned
-        if(getCoinType(_indexToken) == 1) {
-            return _poolAmounts[_collateralToken][_collateralToken];
-        } else {
-            return _poolAmounts[_indexToken][_collateralToken];
-        }
+        return dataReader().poolAmounts(_indexToken, _collateralToken);
     }
 
     function reservedAmounts(address _indexToken, address _collateralToken) external view returns(uint256) {
-        // value == 1 Indicating that it is the indexToken set in the CoinData contract or USDT address
-        // value == 2 Indicating that it is the indexToken set in the MemeFactory contract(meme token)
-        // There are only two situations on this dex: 1 and 2
-        // If other tokens are transferred, there will be zero returned
-        if(getCoinType(_indexToken) == 1) {
-            return _reservedAmounts[_collateralToken][_collateralToken];
-        } else {
-            return _reservedAmounts[_indexToken][_collateralToken];
-        }
+        return dataReader().reservedAmounts(_indexToken, _collateralToken);
     }
 
     function guaranteedUsd(address _indexToken, address _collateralToken) external view returns(uint256) {
-        // value == 1 Indicating that it is the indexToken set in the CoinData contract or USDT address
-        // value == 2 Indicating that it is the indexToken set in the MemeFactory contract(meme token)
-        // There are only two situations on this dex: 1 and 2
-        // If other tokens are transferred, there will be zero returned
-        if(getCoinType(_indexToken) == 1) {
-            return _guaranteedUsd[_collateralToken][_collateralToken];
-        } else {
-            return _guaranteedUsd[_indexToken][_collateralToken];
-        }
+        return dataReader().guaranteedUsd(_indexToken, _collateralToken);
     }
 
     function tokenBalances(address _indexToken, address _collateralToken) external view returns(uint256) {
-        // value == 1 Indicating that it is the indexToken set in the CoinData contract or USDT address
-        // value == 2 Indicating that it is the indexToken set in the MemeFactory contract(meme token)
-        // There are only two situations on this dex: 1 and 2
-        // If other tokens are transferred, there will be zero returned
-        if(getCoinType(_indexToken) == 1) {
-            return _tokenBalances[_collateralToken][_collateralToken];
-        } else {
-            return _tokenBalances[_indexToken][_collateralToken];
-        }
+        return dataReader().tokenBalances(_indexToken, _collateralToken);
     }
 
     mapping (address => uint256) public maxGlobalLongSizes;
@@ -1251,4 +1155,20 @@ contract Vault is Synchron, ReentrancyGuard, IEventStruct {
 
     uint256 public constant MAX_LEVERAGE = 200 * 10000; // 200x;
 
+    // *******************************************************************
+    function dataReader() public view returns(IDataReader) {
+        return IDataReader(ISlippage(slippage).dataReader());
+    }
+    
+    function getTokenData(
+        address _indexToken, 
+        address _collateralToken
+    ) external view returns(uint256, uint256, uint256, uint256) {
+        return (
+            _poolAmounts[_indexToken][_collateralToken],
+            _reservedAmounts[_indexToken][_collateralToken],
+            _guaranteedUsd[_indexToken][_collateralToken],
+            _tokenBalances[_indexToken][_collateralToken]
+        );
+    }
 }

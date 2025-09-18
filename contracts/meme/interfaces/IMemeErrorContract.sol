@@ -41,4 +41,8 @@ interface IMemeErrorContract {
     function validateRouter(address router) external view returns(bool);
 
     function getTokenValue(address token, uint256 amount) external view returns(uint256);
+
+    function memeRouter() external view returns(address);
+
+    function coinData() external view returns(address);
 }

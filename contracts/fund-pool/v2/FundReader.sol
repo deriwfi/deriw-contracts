@@ -167,6 +167,11 @@ contract FundReader is IStruct {
         if(fState.isGet) {
             return fState.needCompoundAmount;
         }
+   
+        if(fState.currFundraisingAmount == 0) {
+            TxInfo memory tInfo = poolDataV2.getTxInfo(pool);
+            fState.currFundraisingAmount = tInfo.fundraisingAmount;
+        } 
 
         if(fState.currFundraisingAmount > fState.depositAmount) {
             return fState.currFundraisingAmount - fState.depositAmount;
@@ -203,7 +208,7 @@ contract FundReader is IStruct {
         }
 
         uint256 remain = fState1.needCompoundAmount - fState1.actCompoundAmount;
-        uint256 amount = fState.outAmount * uInfo.lpAmount / fState.totalLpAmount;
+        uint256 amount = fState.userAmount * uInfo.lpAmount / fState.totalLpAmount;
         if(remain > amount) {
             return (amount, uInfo.lpAmount, false);
         } else {

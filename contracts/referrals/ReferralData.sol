@@ -6,6 +6,7 @@ import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 
 import "../upgradeability/Synchron.sol";
 import "../core/interfaces/ITransferAmountData.sol";
+import "../meme/interfaces/IMemeRisk.sol";
 
 contract ReferralData is Synchron, ITransferAmountData {
     using SafeERC20 for IERC20;
@@ -115,6 +116,7 @@ contract ReferralData is Synchron, ITransferAmountData {
 
         uint256 index = ++totalIndex;  
         indexFee[index] = fee;
+        indexToToken[index] = indexToken;
 
         FeeData memory fData = FeeData(
             user,
@@ -129,7 +131,6 @@ contract ReferralData is Synchron, ITransferAmountData {
 
         emit AddFee(fData);
     }
-
 
     function withdraw(UserAmount[] memory uAmount) external onlyOperator {
         uint256 len = uAmount.length;
@@ -153,6 +154,10 @@ contract ReferralData is Synchron, ITransferAmountData {
             tData.afterValue = getAmount(USDT, user);
 
             emit TransferTo(address(this), user, amount, tData);
+            
+            if(user == address(memeRisk)) {
+                memeRisk.addFeeAmount(indexToToken[index], index, amount);
+            }
         }
 
         emit Withdraw(uAmount);
@@ -162,4 +167,14 @@ contract ReferralData is Synchron, ITransferAmountData {
     function getAmount(address token, address account) public view returns(uint256) {
         return IERC20(token).balanceOf(account);
     }
+
+    // ******************************************************************
+    IMemeRisk public memeRisk;
+    mapping(uint256 => address) public indexToToken;
+    function setMemeRisk(address _memeRisk) external onlyGov {
+        require(_memeRisk != address(0), "_memeRisk err");
+
+        memeRisk = IMemeRisk(_memeRisk);
+    }
+    
 }

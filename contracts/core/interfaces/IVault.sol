@@ -164,5 +164,9 @@ interface IVault is IEventStruct {
         IVaultUtils _vaultUtils,
         address _errorController
     ) external;
-    
+
+    function getTokenData(
+        address _indexToken, 
+        address _collateralToken
+    ) external view returns(uint256, uint256, uint256, uint256);  
 }

@@ -12,6 +12,7 @@ import "./interfaces/IMemeErrorContract.sol";
 import "./interfaces/IMemePool.sol";
 import "../upgradeability/Synchron.sol";
 import "../core/interfaces/IVault.sol";
+import "../Pendant/interfaces/ICoinData.sol";
 
 contract MemeData is Synchron, IMemeStruct {
     using SafeERC20 for IERC20;
@@ -242,5 +243,12 @@ contract MemeData is Synchron, IMemeStruct {
 
     function getUserDepositPoolisIn(address user, address pool) external view returns(bool) {
         return userPool[user].contains(pool);
+    }
+
+    // ************************************************************
+    function addMemeState(address indexToken) external {
+        require(memeErrorContract.coinData() == msg.sender, "caller err");
+
+        isAddMeme[indexToken] = true;
     }
 }

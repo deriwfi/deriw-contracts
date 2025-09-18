@@ -80,4 +80,7 @@ interface IOrderBook is IOrderStruct {
         bool _triggerAboveThreshold,
         uint256 _lever
     ) external;
+
+    function isPositionKeeper(address _account) external view returns(bool);
 }
+

@@ -43,5 +43,6 @@ interface IMemeData is IMemeStruct {
     function getUserDepositPoolNum(address user) external view returns(uint256);
 
     function getUserDepositPool(address user, uint256 index) external view returns(address);
-    
+
+    function addMemeState(address indexToken) external;
 }

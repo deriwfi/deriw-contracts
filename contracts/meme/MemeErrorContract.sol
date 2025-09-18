@@ -78,7 +78,11 @@ contract MemeErrorContract is IMemeStruct {
         require(memeFactory.getWhitelistIsIn(account), "no permission");
         require(!memeData.isTokenCreate(token), "has create");
         require(vault.whitelistedTokens(token), "not whitelistedToken");
-        require(!ICoinData(coinData).isAddCoin(token) && token != usdt, "token err");
+        require(
+            !ICoinData(coinData).isAddCoin(token) && 
+            token != usdt,
+            "token err"
+        );
 
         return true;
     }
@@ -164,5 +168,4 @@ contract MemeErrorContract is IMemeStruct {
     function getCurrBlockNum() public view returns(uint256) {
         return block.number;
     }
-
 }

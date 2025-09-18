@@ -94,4 +94,6 @@ interface ISlippage {
 
     function getTokenMaxLeverage(address indexToken) external view returns(uint256);
 
+    function dataReader() external view returns(address);
+
 }
