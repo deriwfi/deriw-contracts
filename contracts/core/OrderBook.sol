@@ -291,6 +291,7 @@ contract OrderBook is Synchron, ReentrancyGuard, IOStruct, IOrderStruct {
         uint256 _lever
     ) external  nonReentrant {
         require(!blackList.isFusing() && !blackList.isStop(), "can not create");
+        _validateTriggerPrice(_indexToken, _isLong, _triggerPrice);
         require(_triggerPrice > 0, "_triggerPrice err");
         if(_amountIn == 0 && _sizeDelta == 0) {
             revert("value err");
@@ -438,6 +439,7 @@ contract OrderBook is Synchron, ReentrancyGuard, IOStruct, IOrderStruct {
             revert("value err");
         }
         require(!blackList.isStop(), "can not create");
+        _validateTriggerPrice(_indexToken, _isLong, _triggerPrice);
         (uint256 size,uint256 collateral,,,,,,) = IVault(vault).getPosition(msg.sender, usdt, _indexToken, _isLong);
         if(collateral == 0) {
             revert("can not create");
@@ -814,6 +816,10 @@ contract OrderBook is Synchron, ReentrancyGuard, IOStruct, IOrderStruct {
             order.time
         );
     }
-
+ 
+    function _validateTriggerPrice(address _indexToken, bool _isLong,uint256 _triggerPrice) internal view {
+        uint256 _price = _isLong ? IVault(vault).getMaxPrice(_indexToken) : IVault(vault).getMinPrice(_indexToken);
+        require(_price * 10000 >= _triggerPrice, "_triggerPrice err");
+    }
 }
 

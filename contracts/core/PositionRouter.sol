@@ -373,6 +373,7 @@ contract PositionRouter is Synchron, ReentrancyGuard, ITransferAmountData {
     ) external nonReentrant returns (bytes32) {
         require(_referralCode == bytes32(0), "_referralCode err");
         require(!blackList.isFusing() && !blackList.isStop(), "can not create");
+        _validateAcceptablePrice(_indexToken, _isLong, _acceptablePrice);
         uint256 len = _path.length;
         require(len == 1 || len == 2, "408");
         address _pToken = _path[0];
@@ -442,6 +443,7 @@ contract PositionRouter is Synchron, ReentrancyGuard, ITransferAmountData {
     ) external nonReentrant returns (bytes32) {
         require(!blackList.isStop(), "can not create");
         ISlippage(IVault(vault).slippage()).validateRemoveTime(_indexToken);
+        _validateAcceptablePrice(_indexToken, _isLong, _acceptablePrice);
         require(_path.length == 1 || _path.length == 2, "505");
         require(_path[0] == usdt, "path[0] err");
         if(_path.length == 2) {
@@ -478,6 +480,7 @@ contract PositionRouter is Synchron, ReentrancyGuard, ITransferAmountData {
     function executeIncreasePosition(bytes32 _key) public nonReentrant returns (bool) {
         uint256 index = increasePositionKeyToIndex[_key];
         if(!increaseIndex.contains(index)) {
+            emit IncreasePositionNotExist(index);
             return true;
         }
 
@@ -578,7 +581,9 @@ contract PositionRouter is Synchron, ReentrancyGuard, ITransferAmountData {
                 // wrap this call in a try catch to prevent invalid cancels from blocking the loop
                 try this.cancelDecreasePosition(key) returns (bool _wasCancelled) {
                     if (!_wasCancelled) { break; }
-                } catch {}
+                } catch {
+
+                }
             }
         }
     }
@@ -586,6 +591,7 @@ contract PositionRouter is Synchron, ReentrancyGuard, ITransferAmountData {
     function cancelIncreasePosition(bytes32 _key) public nonReentrant returns (bool) {
         uint256 index = increasePositionKeyToIndex[_key];
         if(!increaseIndex.contains(index)) {
+            emit IncreasePositionNotExist(index);
             return true;
         }
 
@@ -633,6 +639,7 @@ contract PositionRouter is Synchron, ReentrancyGuard, ITransferAmountData {
     function executeDecreasePosition(bytes32 _key) public nonReentrant returns (bool) {
         uint256 index = decreasePositionKeyToIndex[_key];
         if(!decreaseIndex.contains(index)) {
+            emit DecreasePositionNotExist(index);
             return true;
         }
        
@@ -686,6 +693,7 @@ contract PositionRouter is Synchron, ReentrancyGuard, ITransferAmountData {
     function cancelDecreasePosition(bytes32 _key) public nonReentrant returns (bool) {
         uint256 index = decreasePositionKeyToIndex[_key];
         if(!decreaseIndex.contains(index)) {
+            emit DecreasePositionNotExist(index);
             return true;
         }
 
@@ -1035,4 +1043,12 @@ contract PositionRouter is Synchron, ReentrancyGuard, ITransferAmountData {
 
         return false;
     }
+
+    function _validateAcceptablePrice(address _indexToken, bool _isLong,uint256 _acceptablePrice) internal view {
+        uint256 _price = _isLong ? IVault(vault).getMaxPrice(_indexToken) : IVault(vault).getMinPrice(_indexToken);
+        require(_price * 10000 >= _acceptablePrice, "_acceptablePrice err");
+    }
+
+    event DecreasePositionNotExist(uint256 index);
+    event IncreasePositionNotExist(uint256 index);
 }
