@@ -32,66 +32,15 @@ interface ICoinData is IPhaseStruct {
     // *********************************************
     function getPoolTargetTokenInfoSetNum(address _poolTargetToken) external view returns(uint256);
 
-    function getMemberTokenTargetIDLength(address _poolTargetToken, uint256 _num) external view returns(uint256);
- 
-    function getMemberTokenTargetID(address _poolTargetToken, uint256 _num, uint256 _index) external view returns(uint256, uint256);
-
-    function getMemberTokenTargetIDIsIn(address _poolTargetToken, uint256 _num, uint256 _memberTokenTargetID) external view returns(bool);
-
     function getCurrMemberTokenTargetIDLength(address _poolTargetToken) external view returns(uint256);
 
     function getCurrMemberTokenTargetID(address _poolTargetToken, uint256 _index) external view returns(uint256, uint256);
 
     function getCurrMemberTokenTargetIDIsIn(address _poolTargetToken, uint256 _memberTokenTargetID) external view returns(bool);
 
-    //  **************************************************
-    function getMemberTokensLength(
-        address _poolTargetToken, 
-        uint256 _num, 
-        uint256 _memberTokenTargetID
-    ) external view returns(uint256);
-
-    function getMemberToken(
-        address _poolTargetToken, 
-        uint256 _num, 
-        uint256 _memberTokenTargetID,
-        uint256 _index
-    ) external view returns(address);
-
-    function getMemberTokenIsIn(
-        address _token,
-        address _poolTargetToken, 
-        uint256 _num, 
-        uint256 _memberTokenTargetID
-    ) external view returns(bool);
-
-    function getRemoveTokensLength(
-        address _poolTargetToken, 
-        uint256 _num
-    ) external view returns(uint256);
-
-    function getRemoveTokensMemberToken(
-        address _poolTargetToken, 
-        uint256 _num, 
-        uint256 _index
-    ) external view returns(address);
-
-    function getRemoveTokenIsIn(
-        address _token,
-        address _poolTargetToken, 
-        uint256 _num
-    ) external view returns(bool);
-
-
     // *********************************
     function getTokenToPoolTargetToken(address _token) external view returns(address);
     
-    function getSingleTokensLength(address _poolTargetToken, uint256 _num) external view returns(uint256);
-
-    function getSingleToken(address _poolTargetToken, uint256 _num, uint256 _index) external view returns(address, uint256);
-
-    function getSingleTokenIsIn(address _token, address _poolTargetToken, uint256 _num) external view returns(bool);
-
     function getCurrSingleTokensLength(address _poolTargetToken) external view returns(uint256);
 
     function getCurrSingleToken(address _poolTargetToken, uint256 _index) external view returns(address, uint256);
@@ -105,4 +54,21 @@ interface ICoinData is IPhaseStruct {
     function getCurrRemoveToken(address _poolTargetToken, uint256 _index) external view returns(address);
 
     function getCurrRemoveTokenIsIn(address _poolTargetToken, address _token) external view returns(bool);
+
+    function getCurrMemberTokensLength(
+        address _poolTargetToken, 
+        uint256 _memberTokenTargetID
+    ) external view returns(uint256); 
+
+    function getCurrMemberToken(
+        address _poolTargetToken, 
+        uint256 _memberTokenTargetID,
+        uint256 _index
+    ) external view returns(address);
+
+    function getCurrMemberTokenIsIn(
+        address _token,
+        address _poolTargetToken, 
+        uint256 _memberTokenTargetID
+    ) external view returns(bool);
 }

@@ -96,7 +96,6 @@ contract CoinData is Synchron, IStruct, IPhaseStruct {
      * @param memberTokenTargetID Set of member token target IDs
      * @param memberTokens Nested mapping of member tokens
      * @param memberTargetTokenRate Mapping of member target token rates
-     * @param removeTokens Set of tokens marked for removal
      * @param currRemoveTokens Current set of tokens marked for removal
      */
     struct PoolTargetTokenInfo {
@@ -107,7 +106,7 @@ contract CoinData is Synchron, IStruct, IPhaseStruct {
         mapping(uint256 => EnumerableSet.UintSet) memberTokenTargetID;
         mapping(uint256 => mapping(uint256 => EnumerableSet.AddressSet)) memberTokens;
         mapping(uint256 => mapping(uint256 => uint256)) memberTargetTokenRate;
-        mapping(uint256 => EnumerableSet.AddressSet) removeTokens;
+
         EnumerableSet.AddressSet currRemoveTokens;
     }
 
@@ -420,7 +419,7 @@ contract CoinData is Synchron, IStruct, IPhaseStruct {
             uint256 _num = getPoolTargetTokenInfoSetNum(_poolTargetToken);
 
             require(
-                getMemberTokenTargetIDIsIn(_poolTargetToken, _num, _nToken.memberTokenTargetID),
+                _getMemberTokenTargetIDIsIn(_poolTargetToken, _num, _nToken.memberTokenTargetID),
                 "memberTokenTargetID err"
             );
             
@@ -647,7 +646,7 @@ contract CoinData is Synchron, IStruct, IPhaseStruct {
         uint256 _memberTokenTargetID = _memberToken.memberTokenTargetID;
         
         require(
-            !getMemberTokenTargetIDIsIn(_poolTargetToken, _num, _memberTokenTargetID) && 
+            !_getMemberTokenTargetIDIsIn(_poolTargetToken, _num, _memberTokenTargetID) && 
             _memberToken.memberTargetTokenRate > 0, 
             "has add memberTokenTargetID"
         );
@@ -795,7 +794,7 @@ contract CoinData is Synchron, IStruct, IPhaseStruct {
                 address _token = _singleTokens[i].token;
                 uint256 _rate = _singleTokens[i].rate;
 
-                bool _isSingle = getSingleTokenIsIn(_token, _pToken, _num);
+                bool _isSingle = _getSingleTokenIsIn(_token, _pToken, _num);
                 if(_isSingleReset) {
                     require(_isSingle, "single token err");
                 } else {
@@ -808,7 +807,7 @@ contract CoinData is Synchron, IStruct, IPhaseStruct {
 
                 require(_rate > 0, "rate err");
 
-                if(getSingleTokenIsIn(_token, _pToken, _num1)) {
+                if(_getSingleTokenIsIn(_token, _pToken, _num1)) {
                     revert("already reset");
                 }
 
@@ -818,7 +817,7 @@ contract CoinData is Synchron, IStruct, IPhaseStruct {
             }
         }
         {
-            uint256 _lenSingleToken = getSingleTokensLength(_poolTargetToken, _num);
+            uint256 _lenSingleToken = _getSingleTokensLength(_poolTargetToken, _num);
             if(_isSingleReset) {
                 require(_setNum == _lenSingleToken, "single token rate reset err");
             } else {
@@ -853,7 +852,7 @@ contract CoinData is Synchron, IStruct, IPhaseStruct {
                 uint256 _memberTokenTargetID = _memberTargetTokenRate[i].memberTokenTargetID;
                 uint256 _rate = _memberTargetTokenRate[i].rate;
 
-                bool _isMemberID = getMemberTokenTargetIDIsIn(_poolTargetToken, _num, _memberTokenTargetID);
+                bool _isMemberID = _getMemberTokenTargetIDIsIn(_poolTargetToken, _num, _memberTokenTargetID);
                 if(_isMemberReset) {
                     require(_isMemberID, "member token err");            
                 } else {
@@ -864,7 +863,7 @@ contract CoinData is Synchron, IStruct, IPhaseStruct {
                 }
 
                 require(_rate > 0, "member target token rate err");
-                if(getMemberTokenTargetIDIsIn(_poolTargetToken, _num1, _memberTokenTargetID)) {
+                if(_getMemberTokenTargetIDIsIn(_poolTargetToken, _num1, _memberTokenTargetID)) {
                     revert("member target token already reset");
                 }
 
@@ -874,7 +873,7 @@ contract CoinData is Synchron, IStruct, IPhaseStruct {
                 _addMemberTokenToNew(_poolTargetToken, _memberTokenTargetID, _num, _num1);
             }
 
-            uint256 _lenMemberToken = getMemberTokenTargetIDLength(_pToken, _num);
+            uint256 _lenMemberToken = _getMemberTokenTargetIDLength(_pToken, _num);
             if(_isMemberReset) {
                 require(_setNum == _lenMemberToken, "target token rate reset err");
             } else {
@@ -889,7 +888,7 @@ contract CoinData is Synchron, IStruct, IPhaseStruct {
         uint256 _num,
         uint256 _num1
     ) internal {
-        uint256 _len = getMemberTokensLength(_poolTargetToken, _num, _memberTokenTargetID);
+        uint256 _len = _getMemberTokensLength(_poolTargetToken, _num, _memberTokenTargetID);
         if(_len > 0) {
             for(uint256 i = 0; i < _len; i++) {
                 address _token = poolTargetTokenInfo[_poolTargetToken].memberTokens[_memberTokenTargetID][_num].at(i);
@@ -934,8 +933,8 @@ contract CoinData is Synchron, IStruct, IPhaseStruct {
         for(uint256 i = 0; i < _len; i++) {
             uint256 _memberTokenTargetID = _removeMemberTokenTargetIDs[i];
             require(
-                getMemberTokenTargetIDIsIn(_poolTargetToken, _num, _memberTokenTargetID) &&
-                getMemberTokensLength(_poolTargetToken, _num, _memberTokenTargetID) == 0,
+                _getMemberTokenTargetIDIsIn(_poolTargetToken, _num, _memberTokenTargetID) &&
+                _getMemberTokensLength(_poolTargetToken, _num, _memberTokenTargetID) == 0,
                 "_removeMemberTokenTargetID err"
             );
         
@@ -965,7 +964,7 @@ contract CoinData is Synchron, IStruct, IPhaseStruct {
             require(
                 tokenInfo[_token].tokenToPoolTargetToken == _poolTargetToken &&
                 _memberTokenTargetID != 0 &&
-                getMemberTokenIsIn(_token, _poolTargetToken, _num, _memberTokenTargetID) &&
+                _getMemberTokenIsIn(_token, _poolTargetToken, _num, _memberTokenTargetID) &&
                 validateRemoveTime(_token),
                 "_removeMemberToken err"
             );
@@ -973,7 +972,7 @@ contract CoinData is Synchron, IStruct, IPhaseStruct {
             
             poolTargetTokenInfo[_poolTargetToken].memberTokens[_memberTokenTargetID][_num].remove(_token);
             tokenInfo[_token].memberTokenTargetID = 0;
-            _addRemoveTokens(_poolTargetToken, _token, _num);
+            _addRemoveTokens(_poolTargetToken, _token);
         }
     }
 
@@ -994,14 +993,14 @@ contract CoinData is Synchron, IStruct, IPhaseStruct {
         for(uint256 i = 0; i < _len; i++) {
             address _token = removeSingleTokens[i];
             require(
-                getSingleTokenIsIn(_token, _poolTargetToken, _num) &&
+                _getSingleTokenIsIn(_token, _poolTargetToken, _num) &&
                 validateRemoveTime(_token),
                 "_removeSingleToken err"
             );
             validateAllDecreasePosition(_token);
             poolTargetTokenInfo[_poolTargetToken].singleTokens[_num].remove(_token);
             poolTargetTokenInfo[_poolTargetToken].singleTokenRate[_token][_num] = 0;
-            _addRemoveTokens(_poolTargetToken, _token, _num);
+            _addRemoveTokens(_poolTargetToken, _token);
             
         }
         return _len;
@@ -1011,10 +1010,8 @@ contract CoinData is Synchron, IStruct, IPhaseStruct {
      * @dev Internal function to add token to remove list
      * @param _poolTargetToken Address of the pool target token
      * @param _token Token address to remove
-     * @param _num Current set number
      */
-    function _addRemoveTokens(address _poolTargetToken, address _token, uint256 _num) internal {
-        poolTargetTokenInfo[_poolTargetToken].removeTokens[_num].add(_token);
+    function _addRemoveTokens(address _poolTargetToken, address _token) internal {
         poolTargetTokenInfo[_poolTargetToken].currRemoveTokens.add(_token);
         tokenInfo[_token].belongTo = 0;
     }
@@ -1130,9 +1127,9 @@ contract CoinData is Synchron, IStruct, IPhaseStruct {
             uint256 _num = getPoolTargetTokenInfoSetNum(_poolTargetToken); 
             uint256 _memberTokenTargetID = tokenInfo[_indexToken].memberTokenTargetID;
             
-            uint256 _len = getMemberTokensLength(_poolTargetToken, _num, _memberTokenTargetID);
+            uint256 _len = _getMemberTokensLength(_poolTargetToken, _num, _memberTokenTargetID);
             for(uint256 i = 0; i < _len; i++) {
-                address token = getMemberToken(_poolTargetToken, _num, _memberTokenTargetID, i);
+                address token = _getMemberToken(_poolTargetToken, _num, _memberTokenTargetID, i);
 
                 globalShortSizes += vault.globalShortSizes(token);
                 globalLongSizes += vault.globalLongSizes(token);
@@ -1203,7 +1200,7 @@ contract CoinData is Synchron, IStruct, IPhaseStruct {
      * @param _num The set number
      * @return The number of member token target IDs
      */
-    function getMemberTokenTargetIDLength(address _poolTargetToken, uint256 _num) public view returns(uint256) {
+    function _getMemberTokenTargetIDLength(address _poolTargetToken, uint256 _num) internal view returns(uint256) {
         return poolTargetTokenInfo[_poolTargetToken].memberTokenTargetID[_num].length();
     }
  
@@ -1215,11 +1212,11 @@ contract CoinData is Synchron, IStruct, IPhaseStruct {
      * @return memberTokenTargetID The ID of the member token target
      * @return rate The rate of the member token target
      */
-    function getMemberTokenTargetID(
+    function _getMemberTokenTargetID(
         address _poolTargetToken, 
         uint256 _num, 
         uint256 _index
-    ) public view returns(uint256, uint256) {
+    ) internal view returns(uint256, uint256) {
         uint256 _memberTokenTargetID = poolTargetTokenInfo[_poolTargetToken].memberTokenTargetID[_num].at(_index);
         return (
             _memberTokenTargetID,
@@ -1234,7 +1231,7 @@ contract CoinData is Synchron, IStruct, IPhaseStruct {
      * @param _memberTokenTargetID The ID to check
      * @return True if the member token target ID exists
      */
-    function getMemberTokenTargetIDIsIn(address _poolTargetToken, uint256 _num, uint256 _memberTokenTargetID) public view returns(bool) {
+    function _getMemberTokenTargetIDIsIn(address _poolTargetToken, uint256 _num, uint256 _memberTokenTargetID) internal view returns(bool) {
         return poolTargetTokenInfo[_poolTargetToken].memberTokenTargetID[_num].contains(_memberTokenTargetID);
     }
 
@@ -1244,7 +1241,7 @@ contract CoinData is Synchron, IStruct, IPhaseStruct {
      * @return The number of current member token target IDs
      */
     function getCurrMemberTokenTargetIDLength(address _poolTargetToken) external view returns(uint256) {
-        return getMemberTokenTargetIDLength(_poolTargetToken, getPoolTargetTokenInfoSetNum(_poolTargetToken));
+        return _getMemberTokenTargetIDLength(_poolTargetToken, getPoolTargetTokenInfoSetNum(_poolTargetToken));
     }
 
     /**
@@ -1258,7 +1255,7 @@ contract CoinData is Synchron, IStruct, IPhaseStruct {
         address _poolTargetToken, 
         uint256 _index
     ) external view returns(uint256, uint256) {
-        return getMemberTokenTargetID(_poolTargetToken, getPoolTargetTokenInfoSetNum(_poolTargetToken), _index);
+        return _getMemberTokenTargetID(_poolTargetToken, getPoolTargetTokenInfoSetNum(_poolTargetToken), _index);
     }
 
     /**
@@ -1268,38 +1265,53 @@ contract CoinData is Synchron, IStruct, IPhaseStruct {
      * @return True if the member token target ID exists
      */
     function getCurrMemberTokenTargetIDIsIn(address _poolTargetToken, uint256 _memberTokenTargetID) external view returns(bool) {
-        return getMemberTokenTargetIDIsIn(_poolTargetToken, getPoolTargetTokenInfoSetNum(_poolTargetToken), _memberTokenTargetID);
+        return _getMemberTokenTargetIDIsIn(_poolTargetToken, getPoolTargetTokenInfoSetNum(_poolTargetToken), _memberTokenTargetID);
     }
 
     /**
      * @notice Gets the number of member tokens for a specific target ID
      * @param _poolTargetToken The address of the pool target token
-     * @param _num The set number
      * @param _memberTokenTargetID The ID of the member token target
      * @return The number of member tokens
      */
-    function getMemberTokensLength(
+    function getCurrMemberTokensLength(
+        address _poolTargetToken, 
+        uint256 _memberTokenTargetID
+    ) external view returns(uint256) {
+        return _getMemberTokensLength(_poolTargetToken, getPoolTargetTokenInfoSetNum(_poolTargetToken), _memberTokenTargetID);
+    }
+
+    function _getMemberTokensLength(
         address _poolTargetToken, 
         uint256 _num, 
         uint256 _memberTokenTargetID
-    ) public view returns(uint256) {
+    ) internal view returns(uint256) {
         return poolTargetTokenInfo[_poolTargetToken].memberTokens[_memberTokenTargetID][_num].length();
     }
 
     /**
      * @notice Gets a specific member token address
      * @param _poolTargetToken The address of the pool target token
-     * @param _num The set number
      * @param _memberTokenTargetID The ID of the member token target
      * @param _index The index of the member token
      * @return The address of the member token
      */
-    function getMemberToken(
+    function getCurrMemberToken(
+        address _poolTargetToken, 
+        uint256 _memberTokenTargetID,
+        uint256 _index
+    ) external view returns(address) {
+        return _getMemberToken(_poolTargetToken, getPoolTargetTokenInfoSetNum(_poolTargetToken), _memberTokenTargetID, _index);
+    }
+
+
+
+    function _getMemberToken(
         address _poolTargetToken, 
         uint256 _num, 
         uint256 _memberTokenTargetID,
         uint256 _index
-    ) public view returns(address) {
+    ) internal view returns(address) {
         return poolTargetTokenInfo[_poolTargetToken].memberTokens[_memberTokenTargetID][_num].at(_index);
     }
 
@@ -1307,61 +1319,26 @@ contract CoinData is Synchron, IStruct, IPhaseStruct {
      * @notice Checks if a token exists in member tokens
      * @param _token The token address to check
      * @param _poolTargetToken The address of the pool target token
-     * @param _num The set number
      * @param _memberTokenTargetID The ID of the member token target
      * @return True if the token exists in member tokens
      */
-    function getMemberTokenIsIn(
+    function getCurrMemberTokenIsIn(
+        address _token,
+        address _poolTargetToken, 
+        uint256 _memberTokenTargetID
+    ) external view returns(bool) {
+        return _getMemberTokenIsIn(_token, _poolTargetToken, getPoolTargetTokenInfoSetNum(_poolTargetToken), _memberTokenTargetID);
+    }
+
+    function _getMemberTokenIsIn(
         address _token,
         address _poolTargetToken, 
         uint256 _num, 
         uint256 _memberTokenTargetID
-    ) public view returns(bool) {
+    ) internal view returns(bool) {
         return poolTargetTokenInfo[_poolTargetToken].memberTokens[_memberTokenTargetID][_num].contains(_token);
     }
 
-    /**
-     * @notice Gets the number of removed tokens
-     * @param _poolTargetToken The address of the pool target token
-     * @param _num The set number
-     * @return The number of removed tokens
-     */
-    function getRemoveTokensLength(
-        address _poolTargetToken, 
-        uint256 _num
-    ) external view returns(uint256) {
-        return poolTargetTokenInfo[_poolTargetToken].removeTokens[_num].length();
-    }
-
-    /**
-     * @notice Gets a specific removed token address
-     * @param _poolTargetToken The address of the pool target token
-     * @param _num The set number
-     * @param _index The index of the removed token
-     * @return The address of the removed token
-     */
-    function getRemoveTokensMemberToken(
-        address _poolTargetToken, 
-        uint256 _num, 
-        uint256 _index
-    ) external view returns(address) {
-        return poolTargetTokenInfo[_poolTargetToken].removeTokens[_num].at(_index);
-    }
-
-    /**
-     * @notice Checks if a token exists in removed tokens
-     * @param _token The token address to check
-     * @param _poolTargetToken The address of the pool target token
-     * @param _num The set number
-     * @return True if the token exists in removed tokens
-     */
-    function getRemoveTokenIsIn(
-        address _token,
-        address _poolTargetToken, 
-        uint256 _num
-    ) external view returns(bool) {
-        return poolTargetTokenInfo[_poolTargetToken].removeTokens[_num].contains(_token);
-    }
 
     /**
      * @notice Gets the pool target token for a given token
@@ -1378,26 +1355,10 @@ contract CoinData is Synchron, IStruct, IPhaseStruct {
      * @param _num The set number
      * @return The number of single tokens
      */
-    function getSingleTokensLength(address _poolTargetToken, uint256 _num) public view returns(uint256) {
+    function _getSingleTokensLength(address _poolTargetToken, uint256 _num) internal view returns(uint256) {
         return poolTargetTokenInfo[_poolTargetToken].singleTokens[_num].length();
     }
 
-
-    /**
-     * @notice Gets a specific single token and its rate
-     * @param _poolTargetToken The address of the pool target token
-     * @param _num The set number
-     * @param _index The index of the single token
-     * @return singleToken The address of the single token
-     * @return rate The rate of the single token
-     */
-    function getSingleToken(address _poolTargetToken, uint256 _num, uint256 _index) public view returns(address, uint256) {
-        address _singleToken = poolTargetTokenInfo[_poolTargetToken].singleTokens[_num].at(_index);
-        return (
-            _singleToken,
-            poolTargetTokenInfo[_poolTargetToken].singleTokenRate[_singleToken][_num]
-        );
-    }
 
     /**
      * @notice Checks if a token exists in single tokens
@@ -1406,7 +1367,7 @@ contract CoinData is Synchron, IStruct, IPhaseStruct {
      * @param _num The set number
      * @return True if the token exists in single tokens
      */
-    function getSingleTokenIsIn(address _token, address _poolTargetToken, uint256 _num) public view returns(bool) {
+    function _getSingleTokenIsIn(address _token, address _poolTargetToken, uint256 _num) internal view returns(bool) {
         return poolTargetTokenInfo[_poolTargetToken].singleTokens[_num].contains(_token);
     }
 
@@ -1417,7 +1378,7 @@ contract CoinData is Synchron, IStruct, IPhaseStruct {
      * @return The current number of single tokens
      */
     function getCurrSingleTokensLength(address _poolTargetToken) external view returns(uint256) {
-        return getSingleTokensLength(_poolTargetToken, getPoolTargetTokenInfoSetNum(_poolTargetToken));
+        return _getSingleTokensLength(_poolTargetToken, getPoolTargetTokenInfoSetNum(_poolTargetToken));
     }
 
     /**
@@ -1428,7 +1389,12 @@ contract CoinData is Synchron, IStruct, IPhaseStruct {
      * @return rate The rate of the single token
      */
     function getCurrSingleToken(address _poolTargetToken, uint256 _index) external view returns(address, uint256) {
-        return getSingleToken(_poolTargetToken, getPoolTargetTokenInfoSetNum(_poolTargetToken), _index);
+        uint256 _num = getPoolTargetTokenInfoSetNum(_poolTargetToken);
+        address _singleToken = poolTargetTokenInfo[_poolTargetToken].singleTokens[_num].at(_index);
+        return (
+            _singleToken,
+            poolTargetTokenInfo[_poolTargetToken].singleTokenRate[_singleToken][_num]
+        );
     }
 
     /**
@@ -1438,7 +1404,7 @@ contract CoinData is Synchron, IStruct, IPhaseStruct {
      * @return True if the token exists in current single tokens
      */
     function getCurrSingleTokenIsIn(address _token, address _poolTargetToken) external view returns(bool) {
-        return getSingleTokenIsIn(_token, _poolTargetToken, getPoolTargetTokenInfoSetNum(_poolTargetToken));
+        return _getSingleTokenIsIn(_token, _poolTargetToken, getPoolTargetTokenInfoSetNum(_poolTargetToken));
     }
 
     /**

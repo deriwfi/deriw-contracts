@@ -482,7 +482,8 @@ contract Slippage is  Synchron, IEventStruct {
         address token,
         uint256 startTime,
         uint256 endTime
-    ) external onlyGov {
+    ) external {
+        validate();
         _setRemoveTime(token, startTime, endTime);
     }
 
@@ -734,24 +735,28 @@ contract Slippage is  Synchron, IEventStruct {
                 startTime < endTime, 
                 "time err"
             );
-        } else {
+        } else if (removeShelves[token][num].endtime > block.timestamp || removeShelves[token][num].endtime == 0) {
             require(
-                (removeShelves[token][num].endtime > block.timestamp || removeShelves[token][num].endtime == 0) &&
                 startTime == removeShelves[token][num].startTime && 
                 endTime > block.timestamp, 
                 "time err"
             );
+        }  else {
+            require(
+                startTime >= block.timestamp &&
+                startTime < endTime,
+                "time err"
+            );
         }
-
+ 
         require(coinData.getTokenIsCanRemove(token), "token err");
-
+ 
         uint256 rNum = ++removeNum[token];
         removeShelves[token][rNum].endtime = endTime;
         removeShelves[token][rNum].startTime = startTime;
-
+ 
         emit SetRemoveTime(token, rNum, startTime, endTime);
     }
-
 
     function _autoDecreasePosition(
         address _account, 

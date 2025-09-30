@@ -899,6 +899,8 @@ contract Vault is Synchron, ReentrancyGuard, IEventStruct {
         _indexToken = dataReader().getTargetIndexToken(_indexToken);
         
         if(_amount > 0) {
+            _tokenBalances[_indexToken][_collateralToken] -= _amount;
+            
             tData.beforeAmount = getAmount(_collateralToken, address(this));
             tData.beforeValue = getAmount(_collateralToken, _receiver);
             IERC20(_collateralToken).safeTransfer(_receiver, _amount);

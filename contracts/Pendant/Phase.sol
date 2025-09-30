@@ -495,10 +495,10 @@ contract Phase is Synchron, IStruct, IPhaseStruct {
         if(_belongTo == 1) {
             return _getLongShortValue(indexToken);
         } else if(_belongTo == 2) {
-            uint256 _num = coinData.getPoolTargetTokenInfoSetNum(_poolTargetToken);
-            uint256 _len = coinData.getMemberTokensLength(_poolTargetToken, _num, _memberTokenTargetID);
+
+            uint256 _len = coinData.getCurrMemberTokensLength(_poolTargetToken, _memberTokenTargetID);
             for(uint256 i = 0; i < _len; i++) {
-                address _token = coinData.getMemberToken(_poolTargetToken, _num, _memberTokenTargetID, i);
+                address _token = coinData.getCurrMemberToken(_poolTargetToken, _memberTokenTargetID, i);
                 (int256 _longValue, int256 _shortValue) = _getLongShortValue(_token);
 
                 longValue += _longValue;
@@ -771,11 +771,10 @@ contract Phase is Synchron, IStruct, IPhaseStruct {
             uint256 _lenMemberTokenTargetID = coinData.getCurrMemberTokenTargetIDLength(_poolTargetToken);
             for(uint256 i = 0; i < _lenMemberTokenTargetID; i++) {
                 (uint256 _memberTokenTargetID,) = coinData.getCurrMemberTokenTargetID(_poolTargetToken, i);
-                uint256 _num = coinData.getPoolTargetTokenInfoSetNum(_poolTargetToken);
 
-                uint256 _lenMemberTokens = coinData.getMemberTokensLength(_poolTargetToken, _num, _memberTokenTargetID);
+                uint256 _lenMemberTokens = coinData.getCurrMemberTokensLength(_poolTargetToken, _memberTokenTargetID);
                 for(uint256 j = 0; j < _lenMemberTokens; j++) {
-                    address _memberToken = coinData.getMemberToken(_poolTargetToken, _num, _memberTokenTargetID, j);
+                    address _memberToken = coinData.getCurrMemberToken(_poolTargetToken, _memberTokenTargetID, j);
                     (int256 _longValue, int256 _shortValue) = _getLongShortValue(_memberToken);
                     totalValue += (_longValue + _shortValue);   
                 }

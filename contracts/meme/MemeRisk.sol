@@ -19,13 +19,6 @@ contract MemeRisk is Synchron, ITransferAmountData {
     using SafeERC20 for IERC20;
 
     /**
-     * @notice Base rate constant used for calculations
-     * @dev Set to 10000 for percentage calculations
-     */
-    uint256 public constant baseRate = 10000;
-
-
-    /**
      * @notice CoinData contract interface
      * @dev Used for token to pool mappings
      */
@@ -199,7 +192,10 @@ contract MemeRisk is Synchron, ITransferAmountData {
      */
     function initialize(address _usdt) external {
         require(!initialized, "has initialized");
-        require(_usdt != address(0), "addr err");
+        require(
+            _usdt != address(0) &&
+            gov != address(0), 
+        "addr err");
 
         initialized = true;
 
