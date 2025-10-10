@@ -192,10 +192,7 @@ contract MemeRisk is Synchron, ITransferAmountData {
      */
     function initialize(address _usdt) external {
         require(!initialized, "has initialized");
-        require(
-            _usdt != address(0) &&
-            gov != address(0), 
-        "addr err");
+        require(_usdt != address(0), "addr err");
 
         initialized = true;
 
