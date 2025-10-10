@@ -153,14 +153,6 @@ contract MemeRisk is Synchron, ITransferAmountData {
     event SetOperator(address account, bool isAdd);
 
     /**
-     * @notice Emitted when tokens are transferred
-     * @param token The token address
-     * @param account The recipient address
-     * @param amount The amount transferred
-     */
-    event TransferTo(address indexed token, address indexed account, uint256 amount);
-
-    /**
      * @notice Emitted when multiple fund deposits occur
      * @param fundData Array of fund deposit data
      */
@@ -251,22 +243,6 @@ contract MemeRisk is Synchron, ITransferAmountData {
         operator[account] = isAdd;
 
         emit SetOperator(account, isAdd);
-    }
-
-    /**
-     * @notice Transfers tokens to specified account
-     * @dev Can only be called by governance
-     * @param token The token address to transfer
-     * @param account The recipient address
-     * @param amount The amount to transfer
-     */
-    function transferTo(address token, address account, uint256 amount) external onlyGov {
-        require(account != address(0), "account err");
-
-        require(IERC20(token).balanceOf(address(this)) >= amount, "not enough");
-        IERC20(token).safeTransfer(account, amount);
-            
-        emit TransferTo(token, account, amount);
     }
 
     /**
