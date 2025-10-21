@@ -512,7 +512,7 @@ contract CoinData is Synchron, IStruct, IPhaseStruct {
         {
             for(uint256 i = 0; i < _lenMemberTokenToMemberToken; i++) {
                 uint256 _memberTokenTargetID = _memberTokenToMemberToken[i].memberTokenTargetID;
-                require(_memberTokenTargetID != 0, "move _memberTokenToMemberToken err");
+                require(_memberTokenTargetID != 0 && _getMemberTokenTargetIDIsIn(_poolTargetToken, _num, _memberTokenTargetID), "move _memberTokenToMemberToken err");
                 uint256 _lenToken = _memberTokenToMemberToken[i].memberTokens.length;
                 for(uint256 j = 0; j < _lenToken; j++) {
                     address _token = _memberTokenToMemberToken[i].memberTokens[j];
@@ -547,7 +547,7 @@ contract CoinData is Synchron, IStruct, IPhaseStruct {
         {
             for(uint256 i = 0; i < _lenSingleTokenToMemberToken; i++) {
                 uint256 _memberTokenTargetID = _singleTokenToMemberToken[i].memberTokenTargetID;
-                require(_memberTokenTargetID != 0, "move _singleTokenToMemberToken err");
+                require(_memberTokenTargetID != 0 && _getMemberTokenTargetIDIsIn(_poolTargetToken, _num, _memberTokenTargetID), "move _singleTokenToMemberToken err");
                 uint256 _lenToken = _singleTokenToMemberToken[i].memberTokens.length;
                 for(uint256 j = 0; j < _lenToken; j++) {
                     address _token = _singleTokenToMemberToken[i].memberTokens[j];
