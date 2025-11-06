@@ -95,5 +95,10 @@ interface IPhase is IPhaseStruct {
     function memeData() external view returns(address);
     function poolDataV2() external view returns(address);
     function getTokenPrice(address token) external view returns(uint256); 
-    
+    function getProfitOrlossValue(address _poolTargetToken) external view returns(int256 totalValue);
+    function getPoolRealTimeNetValue(
+        address _indexToken, 
+        address tokenOut, 
+        uint256 glpAmount
+    ) external view returns(uint256);
 }

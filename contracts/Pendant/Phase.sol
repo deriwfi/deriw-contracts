@@ -739,49 +739,12 @@ contract Phase is Synchron, IStruct, IPhaseStruct {
     }
 
     function getOutAmount(address _indexToken, address tokenOut, uint256 glpAmount) public view returns(uint256) {
-        uint256 total;
-
-        address _poolTargetToken = _indexToken == USDT ? USDT : coinData.getTokenToPoolTargetToken(_indexToken);
-        {
-            if(tokenOut != USDT || coinData.getPoolTargetTokenInfoSetNum(_poolTargetToken) == 0) {
-                return 0;
-            }
-
-            ISlippage sli = ISlippage(vault.slippage());
-            total =  sli.glpTokenSupply(_poolTargetToken, tokenOut);
-            
-            if(glpAmount > total) {
-                glpAmount = total;
-            }
-
-            if(glpAmount == 0) {
-                return 0;
-            }
+        (address _poolTargetToken, uint256 total, bool isZero) = _getOutData(_indexToken, tokenOut, glpAmount);
+        if(isZero) {
+            return 0;
         }
 
-        int256 totalValue;
-        {
-            uint256 _lenSingleToken = coinData.getCurrSingleTokensLength(_poolTargetToken);
-            for(uint256 i = 0; i < _lenSingleToken; i++) {
-                (address _singleToken,) = coinData.getCurrSingleToken(_poolTargetToken, i);
-                (int256 _longValue, int256 _shortValue) = _getLongShortValue(_singleToken);
-                totalValue += (_longValue + _shortValue);   
-            }
-
-            uint256 _lenMemberTokenTargetID = coinData.getCurrMemberTokenTargetIDLength(_poolTargetToken);
-            for(uint256 i = 0; i < _lenMemberTokenTargetID; i++) {
-                (uint256 _memberTokenTargetID,) = coinData.getCurrMemberTokenTargetID(_poolTargetToken, i);
-
-                uint256 _lenMemberTokens = coinData.getCurrMemberTokensLength(_poolTargetToken, _memberTokenTargetID);
-                for(uint256 j = 0; j < _lenMemberTokens; j++) {
-                    address _memberToken = coinData.getCurrMemberToken(_poolTargetToken, _memberTokenTargetID, j);
-                    (int256 _longValue, int256 _shortValue) = _getLongShortValue(_memberToken);
-                    totalValue += (_longValue + _shortValue);   
-                }
-            }
-        }
-
-
+        int256 totalValue = _getTotalValue(_poolTargetToken);
         uint256 poolAmount = vault.poolAmounts(_poolTargetToken, tokenOut);
         {
             if(totalValue > 0) {
@@ -794,7 +757,7 @@ contract Phase is Synchron, IStruct, IPhaseStruct {
                 poolAmount -= _total;
             } 
         }
-        
+
         return poolAmount * glpAmount / total;        
     }
 
@@ -859,5 +822,85 @@ contract Phase is Synchron, IStruct, IPhaseStruct {
 
     function _validate(address account) internal pure {
         require(account != address(0), "account err");
+    }
+
+    // *********************************************************
+    function getPoolRealTimeNetValue(
+        address _indexToken, 
+        address tokenOut, 
+        uint256 glpAmount
+    ) external view returns(uint256) {
+        (address _poolTargetToken, uint256 total, bool isZero) = _getOutData(_indexToken, tokenOut, glpAmount);
+        if(isZero) {
+            revert("token or glp err");
+        }
+
+        int256 totalValue = _getTotalValue(_poolTargetToken);
+        uint256 poolAmount = vault.poolAmounts(_poolTargetToken, tokenOut);
+        uint256 deci = 10 ** IERC20Metadata(tokenOut).decimals();
+        uint256 poolValue = poolAmount * getTokenPrice(tokenOut) / deci;
+        {
+            if(totalValue > 0) {
+                uint256 _total = uint256(totalValue);
+                if(_total >= poolValue) {
+                    return 0;
+                }
+                poolValue -= _total;
+            } else {
+                poolValue += uint256(-totalValue);
+            }
+        } 
+
+        return poolValue * glpAmount / total;        
+    }
+
+    function _getOutData(
+        address indexToken, 
+        address tokenOut, 
+        uint256 glpAmount
+    ) internal view returns(address, uint256, bool) {
+        uint256 total;
+        bool isZero;
+        address _poolTargetToken = indexToken == USDT ? USDT : coinData.getTokenToPoolTargetToken(indexToken);
+        {
+            if(tokenOut != USDT || coinData.getPoolTargetTokenInfoSetNum(_poolTargetToken) == 0) {
+                isZero = true;
+            }
+
+            ISlippage sli = ISlippage(vault.slippage());
+            total =  sli.glpTokenSupply(_poolTargetToken, tokenOut);
+            
+            if(glpAmount > total) {
+                glpAmount = total;
+            }
+
+            if(glpAmount == 0) {
+                isZero = true;
+            }
+        }
+        return (_poolTargetToken, total, isZero);
+    }
+
+    function _getTotalValue(address _poolTargetToken) internal view returns(int256 totalValue) {
+        {
+            uint256 _lenSingleToken = coinData.getCurrSingleTokensLength(_poolTargetToken);
+            for(uint256 i = 0; i < _lenSingleToken; i++) {
+                (address _singleToken,) = coinData.getCurrSingleToken(_poolTargetToken, i);
+                (int256 _longValue, int256 _shortValue) = _getLongShortValue(_singleToken);
+                totalValue += (_longValue + _shortValue);   
+            }
+
+            uint256 _lenMemberTokenTargetID = coinData.getCurrMemberTokenTargetIDLength(_poolTargetToken);
+            for(uint256 i = 0; i < _lenMemberTokenTargetID; i++) {
+                (uint256 _memberTokenTargetID,) = coinData.getCurrMemberTokenTargetID(_poolTargetToken, i);
+
+                uint256 _lenMemberTokens = coinData.getCurrMemberTokensLength(_poolTargetToken, _memberTokenTargetID);
+                for(uint256 j = 0; j < _lenMemberTokens; j++) {
+                    address _memberToken = coinData.getCurrMemberToken(_poolTargetToken, _memberTokenTargetID, j);
+                    (int256 _longValue, int256 _shortValue) = _getLongShortValue(_memberToken);
+                    totalValue += (_longValue + _shortValue);   
+                }
+            }
+        }
     }
 }

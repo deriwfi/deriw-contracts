@@ -71,4 +71,7 @@ interface ICoinData is IPhaseStruct {
         address _poolTargetToken, 
         uint256 _memberTokenTargetID
     ) external view returns(bool);
+
+
+    function poolDataV2() external view returns(address);
 }

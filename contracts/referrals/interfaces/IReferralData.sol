@@ -22,4 +22,6 @@ interface IReferralData  {
     ) external;
 
     function getAmount(address token, address account) external view returns(uint256);
+
+    function adlContract() external view returns(address);
 }

@@ -169,4 +169,16 @@ interface IVault is IEventStruct {
         address _indexToken, 
         address _collateralToken
     ) external view returns(uint256, uint256, uint256, uint256);  
+
+    function ADLDecreasePosition(
+        uint8 _cType,
+        bytes32 _key,
+        address _account, 
+        address _collateralToken, 
+        address _indexToken, 
+        uint256 _collateralDelta, 
+        uint256 _sizeDelta, 
+        bool _isLong, 
+        address _receiver
+    ) external returns(uint256);
 }

@@ -177,4 +177,11 @@ contract ReferralData is Synchron, ITransferAmountData {
         memeRisk = IMemeRisk(_memeRisk);
     }
     
+    // ******************************************************************
+    address public adlContract;
+    function setAdlContract(address _adlContract) external onlyGov {
+        require(_adlContract != address(0), "_adlContract err");
+
+        adlContract = _adlContract;
+    }
 }

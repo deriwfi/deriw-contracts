@@ -17,6 +17,7 @@ import "./interfaces/IEventStruct.sol";
 import "../upgradeability/Synchron.sol";
 import "../Pendant/interfaces/ICoinData.sol";
 import "./interfaces/IDataReader.sol";
+import "./interfaces/IADL.sol";
 
 contract Vault is Synchron, ReentrancyGuard, IEventStruct {
     using SafeMath for uint256;
@@ -162,12 +163,12 @@ contract Vault is Synchron, ReentrancyGuard, IEventStruct {
 
 
     modifier onlyWhitelistedToken(address _token) {
-        require(whitelistedTokens[_token], "token err");
+        require(whitelistedTokens[_token], "WHITE");
         _;
     }
 
     function initialize(address _usdt) external {
-        require(!initialized, "init err");
+        require(!initialized, "INIT");
         initialized = true;
 
         usdt = _usdt;
@@ -187,8 +188,9 @@ contract Vault is Synchron, ReentrancyGuard, IEventStruct {
         address _errorController
     ) external {
         _onlyGov();
-        require(_multiplier > 0, "mul err");
-
+        if(_multiplier == 0) {
+            revert();            
+        }
         router = _router;
         liquidationFeeUsd = _liquidationFeeUsd;
         multiplier = _multiplier;
@@ -236,7 +238,7 @@ contract Vault is Synchron, ReentrancyGuard, IEventStruct {
     }
 
     function setGov(address _gov) external {
-        require(_gov != address(0), "_gov err");
+        require(_gov != address(0), "GOV");
         _onlyGov();
         gov = _gov;
     }
@@ -266,7 +268,7 @@ contract Vault is Synchron, ReentrancyGuard, IEventStruct {
         require(
             _marginFeeBasisPoints <= MAX_FEE_BASIS_POINTS &&
             _liquidationFeeUsd <= MAX_LIQUIDATION_FEE_USD,
-            "data err"
+            "DATA"
         );
 
         marginFeeBasisPoints = _marginFeeBasisPoints;
@@ -359,7 +361,7 @@ contract Vault is Synchron, ReentrancyGuard, IEventStruct {
         bool _isLong,
         uint256 _amount
     ) external nonReentrant {
-        require(isFrom[_collateralToken] && _collateralToken == usdt, "token err");
+        require(isFrom[_collateralToken] && _collateralToken == usdt, "TOKEN");
         slippage.validateRemoveTime(_indexToken);
 
         _validate(isLeverageEnabled, 28);
@@ -959,42 +961,19 @@ contract Vault is Synchron, ReentrancyGuard, IEventStruct {
     }
 
     function _increaseGlobalLongSize(address _indexToken, uint256 _amount) internal {
-        globalLongSizes[_indexToken] += _amount;
-
-        uint256 maxSize = maxGlobalLongSizes[_indexToken];
-        if (maxSize != 0) {
-            require(globalLongSizes[_indexToken] <= maxSize, "long");
-        }
+        globalLongSizes[_indexToken] = adlContract().increaseGlobalLongSize(_indexToken, _amount);
     }
 
     function _decreaseGlobalLongSize(address /*user*/, address _indexToken, uint256 _amount) private {
-        uint256 size = globalLongSizes[_indexToken];
-        if (_amount > size) {
-          globalLongSizes[_indexToken] = 0;
-          return;
-        }
-
-        globalLongSizes[_indexToken] = size - _amount;
+        globalLongSizes[_indexToken] = adlContract().decreaseGlobalLongSize(_indexToken, _amount);
     }
 
     function _increaseGlobalShortSize(address _indexToken, uint256 _amount) internal {
-        globalShortSizes[_indexToken] += _amount;
-
-        uint256 maxSize = maxGlobalShortSizes[_indexToken];
-        if (maxSize != 0) {
-            require(globalShortSizes[_indexToken] <= maxSize, "shorts");
-        }
+        globalShortSizes[_indexToken] = adlContract().increaseGlobalShortSize(_indexToken, _amount);
     }
 
     function _decreaseGlobalShortSize(address /*user*/, address _indexToken, uint256 _amount) private {
-        uint256 size = globalShortSizes[_indexToken];
-        if (_amount > size) {
-          globalShortSizes[_indexToken] = 0;
-          return;
-        }
-
-        globalShortSizes[_indexToken] = size - _amount;
-
+        globalShortSizes[_indexToken] = adlContract().decreaseGlobalShortSize(_indexToken, _amount);
     }
 
     // we have this validation as a function instead of a modifier to reduce contract size
@@ -1005,7 +984,7 @@ contract Vault is Synchron, ReentrancyGuard, IEventStruct {
 
     // we have this validation as a function instead of a modifier to reduce contract size
     function _validateManager() private view {
-        require(isManager[msg.sender], "not manager"); 
+        require(isManager[msg.sender], "MANAGER"); 
     }
 
     function _validate(bool _condition, uint256 _errorCode) private view {
@@ -1112,7 +1091,7 @@ contract Vault is Synchron, ReentrancyGuard, IEventStruct {
         address _indexToken, 
         bool _isLong
     ) external  nonReentrant returns(uint256) {
-        require(msg.sender == address(slippage), "not slippage");
+        require(msg.sender == address(slippage), "SLI");
         bytes32 key = getPositionKey(_account, _collateralToken, _indexToken, _isLong);
 
         return _decreasePosition(
@@ -1172,5 +1151,24 @@ contract Vault is Synchron, ReentrancyGuard, IEventStruct {
             _guaranteedUsd[_indexToken][_collateralToken],
             _tokenBalances[_indexToken][_collateralToken]
         );
+    }
+    // *******************************************************
+    function adlContract() internal view returns(IADL) {
+        return IADL(referralData.adlContract());
+    }
+    
+    function ADLDecreasePosition(
+        uint8 _cType,
+        bytes32 _key,
+        address _account, 
+        address _collateralToken, 
+        address _indexToken, 
+        uint256 _collateralDelta, 
+        uint256 _sizeDelta, 
+        bool _isLong, 
+        address _receiver
+    ) external nonReentrant returns(uint256) {
+        require(msg.sender == referralData.adlContract(), "ADL");
+        return _decreasePosition(_cType, _key, _account, _collateralToken, _indexToken, _collateralDelta, _sizeDelta, _isLong, _receiver);
     }
 }
