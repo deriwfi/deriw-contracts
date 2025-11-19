@@ -148,6 +148,9 @@ contract ADL is Synchron {
     /// @notice Emitted when global long and short sizes are updated
     event SetGlobalLongAndShortSizes(address targetIndexToken, address pool, uint256 longSize, uint256 shortSize);
 
+    
+    event UserHasNoPosition(ADLPosition aPosition, address pool, uint256 index, uint256 num);
+    
     /**
      * @notice Constructor that sets initialization status
      */
@@ -293,7 +296,6 @@ contract ADL is Synchron {
      * @param index The operation index
      * @param aPosition Array of ADL position structures to decrease
      */
-    
     function batchDecreasePositionADL(
         address indexToken,
         uint256 index,
@@ -319,26 +321,34 @@ contract ADL is Synchron {
                     }
                 }
 
-                vault.ADLDecreasePosition(
-                    TX_TYPE_ADL, 
-                    TX_CODE_ADL, 
-                    _aPosition.account, 
-                    _aPosition.collateralToken, 
-                    _aPosition.indexToken, 
-                    _aPosition.collateralDelta, 
-                    _aPosition.sizeDelta, 
-                    _aPosition.isLong, 
-                    _aPosition.account
-                );
-                indexes[targetIndexToken].add(index);
+                bytes32 key = vault.getPositionKey(_aPosition.account, _aPosition.collateralToken, _aPosition.indexToken, _aPosition.isLong);
+                IVault.Position memory position = vault.getPositionFrom(key);
                 uint256 num = ++number[targetIndexToken][index];
-                listADLPosition[targetIndexToken][index][num] = _aPosition;
-                emit DecreasePositionADL(targetIndexToken, pool, index, num, _aPosition);
+                if(position.size > 0) {
+                    vault.ADLDecreasePosition(
+                        TX_TYPE_ADL, 
+                        TX_CODE_ADL, 
+                        _aPosition.account, 
+                        _aPosition.collateralToken, 
+                        _aPosition.indexToken, 
+                        _aPosition.collateralDelta, 
+                        _aPosition.sizeDelta, 
+                        _aPosition.isLong, 
+                        _aPosition.account
+                    );
+                    indexes[targetIndexToken].add(index);
 
-                if(_getIsSetValue(targetIndexToken)) {
-                    timeInfo[targetIndexToken][index].endTime = block.timestamp;
-                    emit ADLHasEnd(indexToken, targetIndexToken, pool, index, num);
-                    return;
+                    listADLPosition[targetIndexToken][index][num] = _aPosition;
+                    emit DecreasePositionADL(targetIndexToken, pool, index, num, _aPosition);
+
+                    uint256 _index = index;
+                    if(_getIsSetValue(targetIndexToken)) {
+                        timeInfo[targetIndexToken][_index].endTime = block.timestamp;
+                        emit ADLHasEnd(indexToken, targetIndexToken, pool, _index, num);
+                        return;
+                    }
+                } else {
+                    emit UserHasNoPosition(_aPosition, pool, index, num);
                 }
             }
         } else {
@@ -445,6 +455,18 @@ contract ADL is Synchron {
             bytes32 key = vault.getPositionKey(_pData.account, _pData.collateralToken, _pData.indexToken, _pData.isLong);
 
             IVault.Position memory position = vault.getPositionFrom(key);
+            if(position.averagePrice > 0) {
+                (bool _hasProfit, uint256 delta) = vault.getDelta(
+                    _pData.indexToken, 
+                    position.size, 
+                    position.averagePrice, 
+                    _pData.isLong, 
+                    position.lastIncreasedTime
+                );
+                position.realisedPnl = _hasProfit ? int256(delta) : -int256(delta);
+            } else {
+                position.realisedPnl = 0;
+            }
             positions[i] = position;
         }
 
