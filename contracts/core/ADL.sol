@@ -151,6 +151,8 @@ contract ADL is Synchron {
     
     event UserHasNoPosition(ADLPosition aPosition, address pool, uint256 index, uint256 num);
     
+    event SetGov(address oldGov, address newGov);
+
     /**
      * @notice Constructor that sets initialization status
      */
@@ -196,7 +198,10 @@ contract ADL is Synchron {
      */
     function setGov(address _gov) external onlyGov {
         require(_gov != address(0), "_gov err");
+        address oldGov = gov;
         gov = _gov;
+
+        emit SetGov(oldGov, _gov);
     }
 
     /**
@@ -212,7 +217,8 @@ contract ADL is Synchron {
         address _vault,
         address _dataReader,
         address _memeData,
-        address _poolDataV2
+        address _poolDataV2,
+        address[] calldata targetIndexTokens
     ) external onlyGov {
         require(
             _coinData != address(0) &&
@@ -228,6 +234,7 @@ contract ADL is Synchron {
         dataReader = IDataReader(_dataReader);
         memeData = IMemeData(_memeData);
         poolDataV2 = IPoolDataV2(_poolDataV2);
+        _setGlobalLongAndShortSizes(targetIndexTokens);
     }
 
     /**
@@ -235,19 +242,7 @@ contract ADL is Synchron {
      * @param targetIndexTokens Array of target index token addresses
      */
     function setGlobalLongAndShortSizes(address[] calldata targetIndexTokens) external onlyGov {
-        uint256 len = targetIndexTokens.length;
-        for(uint256 i = 0; i < len; i++) {
-            address tToken = targetIndexTokens[i];
-            address targetIndexToken = dataReader.getTargetIndexToken(tToken);
-            require(targetIndexToken == tToken, "targetIndexToken err");
-            
-            (uint256 longSize, uint256 shortSize) = _getGlobalLongAndShortSizes(targetIndexToken);
-            _totalGlobalLongSizes[targetIndexToken] = longSize;
-            _totalGlobalShortSizes[targetIndexToken] = shortSize;
-            (address pool, ) = _getCurrPool(targetIndexToken);
-
-            emit SetGlobalLongAndShortSizes(targetIndexToken, pool, longSize, shortSize);
-        }
+        _setGlobalLongAndShortSizes(targetIndexTokens);
     }
 
     /**
@@ -386,6 +381,7 @@ contract ADL is Synchron {
             _globalLongSize = size - _amount;
             _totalGlobalLongSizes[_indexToken] -= _amount;
         } else {
+            
             _totalGlobalLongSizes[_indexToken] -= size;
         }
     }
@@ -421,6 +417,27 @@ contract ADL is Synchron {
             _totalGlobalShortSizes[_indexToken] -= _amount;
         } else {
             _totalGlobalShortSizes[_indexToken] -= size;
+        }
+    }
+
+
+    /**
+     * @notice Sets global long and short sizes for target index tokens
+     * @param targetIndexTokens Array of target index token addresses
+     */
+    function _setGlobalLongAndShortSizes(address[] calldata targetIndexTokens) internal {
+        uint256 len = targetIndexTokens.length;
+        for(uint256 i = 0; i < len; i++) {
+            address tToken = targetIndexTokens[i];
+            address targetIndexToken = dataReader.getTargetIndexToken(tToken);
+            require(targetIndexToken == tToken, "targetIndexToken err");
+            
+            (uint256 longSize, uint256 shortSize) = _getGlobalLongAndShortSizes(targetIndexToken);
+            _totalGlobalLongSizes[targetIndexToken] = longSize;
+            _totalGlobalShortSizes[targetIndexToken] = shortSize;
+            (address pool, ) = _getCurrPool(targetIndexToken);
+
+            emit SetGlobalLongAndShortSizes(targetIndexToken, pool, longSize, shortSize);
         }
     }
 

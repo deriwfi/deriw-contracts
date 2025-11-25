@@ -739,7 +739,7 @@ contract Phase is Synchron, IStruct, IPhaseStruct {
     }
 
     function getOutAmount(address _indexToken, address tokenOut, uint256 glpAmount) public view returns(uint256) {
-        (address _poolTargetToken, uint256 total, bool isZero) = _getOutData(_indexToken, tokenOut, glpAmount);
+        (address _poolTargetToken, uint256 total, uint256 _glpAmount, bool isZero) = _getOutData(_indexToken, tokenOut, glpAmount);
         if(isZero) {
             return 0;
         }
@@ -758,7 +758,7 @@ contract Phase is Synchron, IStruct, IPhaseStruct {
             } 
         }
 
-        return poolAmount * glpAmount / total;        
+        return poolAmount * _glpAmount / total;        
     }
 
     function calculatePrice(address _indexToken, address _token) external {
@@ -830,7 +830,7 @@ contract Phase is Synchron, IStruct, IPhaseStruct {
         address tokenOut, 
         uint256 glpAmount
     ) external view returns(uint256) {
-        (address _poolTargetToken, uint256 total, bool isZero) = _getOutData(_indexToken, tokenOut, glpAmount);
+        (address _poolTargetToken, uint256 total, uint256 _glpAmount, bool isZero) = _getOutData(_indexToken, tokenOut, glpAmount);
         if(isZero) {
             revert("token or glp err");
         }
@@ -851,14 +851,14 @@ contract Phase is Synchron, IStruct, IPhaseStruct {
             }
         } 
 
-        return poolValue * glpAmount / total;        
+        return poolValue * _glpAmount / total;        
     }
 
     function _getOutData(
         address indexToken, 
         address tokenOut, 
         uint256 glpAmount
-    ) internal view returns(address, uint256, bool) {
+    ) internal view returns(address, uint256, uint256, bool) {
         uint256 total;
         bool isZero;
         address _poolTargetToken = indexToken == USDT ? USDT : coinData.getTokenToPoolTargetToken(indexToken);
@@ -878,7 +878,7 @@ contract Phase is Synchron, IStruct, IPhaseStruct {
                 isZero = true;
             }
         }
-        return (_poolTargetToken, total, isZero);
+        return (_poolTargetToken, total, glpAmount, isZero);
     }
 
     function _getTotalValue(address _poolTargetToken) internal view returns(int256 totalValue) {
