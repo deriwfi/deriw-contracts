@@ -17,7 +17,7 @@ import "../referrals/interfaces/IReferralStorage.sol";
 import "../referrals/interfaces/IReferralData.sol";
 import "./interfaces/ITransferAmountData.sol";
 import "../upgradeability/Synchron.sol";
-
+import "./interfaces/IVaultUtils.sol";
 
 contract PositionRouter is Synchron, ReentrancyGuard, ITransferAmountData {
     using Address for address;
@@ -195,7 +195,7 @@ contract PositionRouter is Synchron, ReentrancyGuard, ITransferAmountData {
     event CreateIncreaseTransferEvent(IncreaseTransferEvent iEvent);
     event CreateIncreasePosition(CreateIncreasePositionEvent cEvent);
     event ExecuteIncreasePosition(ExecuteIncreaseEvent eEvent);
-    event CancelIncreasePosition(CancelIncreaseEvent cEvent);
+    event CancelIncreasePosition(CancelIncreaseEvent cEvent, uint8 cancelType);
     event ExecuteDecreasePosition(ExecuteDecreaseEventFor eEvent);
     event CancelDecreasePosition(CancelDecreaseEvent cEvent);
 
@@ -485,13 +485,38 @@ contract PositionRouter is Synchron, ReentrancyGuard, ITransferAmountData {
         }
 
         IncreasePositionRequest memory request = _increasePositionRequests[_key];
-        ISlippage(IVault(vault).slippage()).validateCreate(request.indexToken);
+
+        (, uint256 sPrice) = getVaultPrice(request.indexToken, request.sizeDelta, request.isLong);
+        slippagePrice[index] = sPrice;
+        if(request.isLong) {
+            if(sPrice > request.acceptablePrice) {
+                _setErrState(index, 1);
+                _cancelIncreasePosition(_key);
+                return true;
+            }
+        } else {
+            if(sPrice < request.acceptablePrice) {
+                _setErrState(index, 1);
+                _cancelIncreasePosition(_key);
+                return true;
+            }
+        }
+
+        IVault _vault = IVault(vault);
+        address token = request.path[request.path.length - 1];
+        bool isState = IVaultUtils(_vault.vaultUtils()).validateLiquidationIncreasePositionRouter(
+            _key, request.account, token, request.indexToken, request.sizeDelta, request.isLong, request.amountIn
+        );
+        if(!isState) {
+            _cancelIncreasePosition(_key);
+            return true;
+        }
+
+        ISlippage(_vault.slippage()).validateCreate(request.indexToken);
         phase.validateSizeDelta(request.account, request.indexToken, request.sizeDelta, request.isLong);
 
         bool shouldExecute = _validateExecution(request.blockNumber, request.blockTime, request.account);
         if (!shouldExecute) { return false; }
-
-        address token = request.path[request.path.length - 1];
 
         uint256 amountIn = request.amountIn;
         if (request.amountIn > 0) {
@@ -589,51 +614,7 @@ contract PositionRouter is Synchron, ReentrancyGuard, ITransferAmountData {
     }
 
     function cancelIncreasePosition(bytes32 _key) public nonReentrant returns (bool) {
-        uint256 index = increasePositionKeyToIndex[_key];
-        if(!increaseIndex.contains(index)) {
-            emit IncreasePositionNotExist(index);
-            return true;
-        }
-
-        IncreasePositionRequest memory request = _increasePositionRequests[_key];
-
-        bool shouldCancel = _validateCancellation(request.blockNumber, request.blockTime, request.account);
-        if (!shouldCancel) { return false; }
-
-        uint256 time = request.blockTime;
-        uint256 num = request.blockNumber;
-        CancelIncreaseEvent memory cEvent = CancelIncreaseEvent(
-            _key,
-            request.account,
-            request.path,
-            request.indexToken,
-            request.amountIn,
-            request.sizeDelta,
-            request.isLong,
-            request.acceptablePrice,
-            block.number - num,
-            block.timestamp - time,
-            index
-        );
-
-        emit CancelIncreasePosition(cEvent);
-
-        address token = request.path[0];
-        TransferAmountData memory tData = _safeTransfer(token, request.account, request.amountIn);
-
-        emit CancelIncreaseTransferEvent(
-            _key, 
-            address(this), 
-            request.account, 
-            request.amountIn, 
-            tData.beforeAmount, 
-            tData.afterAmount, 
-            tData.beforeValue, 
-            tData.afterValue
-        );
-        increaseIndex.remove(index);
-
-        return true;
+       return _cancelIncreasePosition(_key);
     }
 
     function executeDecreasePosition(bytes32 _key) public nonReentrant returns (bool) {
@@ -969,15 +950,15 @@ contract PositionRouter is Synchron, ReentrancyGuard, ITransferAmountData {
         address _indexToken,
         uint256 _sizeDelta,
         bool _isLong,
-        uint256 _price,
+        uint256 /*_price*/,
         uint256 _amount
     ) internal {
-        uint256 markPrice = _isLong ? IVault(_vault).getMaxPrice(_indexToken) : IVault(_vault).getMinPrice(_indexToken);
-        if (_isLong) {
-            require(markPrice <= _price, "markPrice > price");
-        } else {
-            require(markPrice >= _price, "markPrice < price");
-        }
+        // uint256 markPrice = _isLong ? IVault(_vault).getMaxPrice(_indexToken) : IVault(_vault).getMinPrice(_indexToken);
+        // if (_isLong) {
+        //     require(markPrice <= _price, "markPrice > price");
+        // } else {
+        //     require(markPrice >= _price, "markPrice < price");
+        // }
 
         address timelock = IVault(_vault).gov();
 
@@ -1051,4 +1032,97 @@ contract PositionRouter is Synchron, ReentrancyGuard, ITransferAmountData {
 
     event DecreasePositionNotExist(uint256 index);
     event IncreasePositionNotExist(uint256 index);
+
+    // *********************************************************************
+    mapping(uint256 => uint256) slippagePrice;
+    mapping(uint256 => uint8) errState;
+
+    function setErrState(uint256 index, uint8 eState) external {
+        require(msg.sender == IVault(vault).vaultUtils(), "not vaultUtils");
+        _setErrState(index, eState);
+    }
+
+    function _setErrState(uint256 index, uint8 eState) internal {
+        errState[index] = eState;
+    }
+
+    function _cancelIncreasePosition(bytes32 _key) internal returns (bool) {
+        uint256 index = increasePositionKeyToIndex[_key];
+        if(!increaseIndex.contains(index)) {
+            emit IncreasePositionNotExist(index);
+            return true;
+        }
+
+        IncreasePositionRequest memory request = _increasePositionRequests[_key];
+
+        bool shouldCancel = _validateCancellation(request.blockNumber, request.blockTime, request.account);
+        if (!shouldCancel) { return false; }
+
+        uint256 time = request.blockTime;
+        uint256 num = request.blockNumber;
+        CancelIncreaseEvent memory cEvent = CancelIncreaseEvent(
+            _key,
+            request.account,
+            request.path,
+            request.indexToken,
+            request.amountIn,
+            request.sizeDelta,
+            request.isLong,
+            request.acceptablePrice,
+            block.number - num,
+            block.timestamp - time,
+            index
+        );
+
+        emit CancelIncreasePosition(cEvent, errState[index]);
+
+        address token = request.path[0];
+        TransferAmountData memory tData = _safeTransfer(token, request.account, request.amountIn);
+
+        emit CancelIncreaseTransferEvent(
+            _key, 
+            address(this), 
+            request.account, 
+            request.amountIn, 
+            tData.beforeAmount, 
+            tData.afterAmount, 
+            tData.beforeValue, 
+            tData.afterValue
+        );
+        increaseIndex.remove(index);
+
+        return true;
+    }
+
+
+    function getSlippagePrice(
+        bytes32 key,
+        address indexToken, 
+        uint256 size, 
+        bool isLong
+    ) external view returns(uint256) {
+        require(msg.sender == IVault(vault).vaultUtils(), "not vaultUtils");
+        uint256 index = increasePositionKeyToIndex[key];
+        if(index != 0) {
+            return slippagePrice[index];
+        } else {
+            (,uint256 sPrice) = getVaultPrice(indexToken, size, isLong);
+            return sPrice;
+        }
+
+    }
+
+    function getVaultPrice(
+        address indexToken, 
+        uint256 size, 
+        bool isLong
+    ) public view returns(uint256, uint256) {
+        IVault _vault = IVault(vault);
+        ISlippage slippage = ISlippage(_vault.slippage());
+
+        uint256 price = isLong ? _vault.getMaxPrice(indexToken) : _vault.getMinPrice(indexToken);
+        uint256 sPrice = slippage.getVaultPrice(indexToken, size, isLong, price);
+
+        return (price, sPrice);
+    }
 }

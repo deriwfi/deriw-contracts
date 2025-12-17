@@ -82,5 +82,7 @@ interface IOrderBook is IOrderStruct {
     ) external;
 
     function isPositionKeeper(address _account) external view returns(bool);
+
+    function getCurrUserOrderIndex() external view returns(address, uint256, uint256);
 }
 

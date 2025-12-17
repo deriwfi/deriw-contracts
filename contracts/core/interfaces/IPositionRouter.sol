@@ -28,4 +28,15 @@ interface IPositionRouter {
         uint256 _acceptablePrice,
         address _callbackTarget
     ) external  returns (bytes32);
+
+    function getSlippagePrice(
+        bytes32 key,
+        address indexToken, 
+        uint256 size, 
+        bool isLong
+    ) external view returns(uint256);
+
+    function increasePositionKeyToIndex(bytes32 key) external view returns(uint256);
+
+    function setErrState(uint256 index, uint8 eState) external;
 }

@@ -17,6 +17,7 @@ import "../peripherals/interfaces/ITimelock.sol";
 import "../referrals/interfaces/IReferralData.sol";
 import "../Pendant/interfaces/IPhase.sol";
 import "../upgradeability/Synchron.sol";
+import "./interfaces/IVaultUtils.sol";
 
 contract OrderBook is Synchron, ReentrancyGuard, IOStruct, IOrderStruct {
     using SafeERC20 for IERC20;
@@ -378,15 +379,31 @@ contract OrderBook is Synchron, ReentrancyGuard, IOStruct, IOrderStruct {
         IncreaseOrder memory order = increaseOrders[_address][_orderIndex];
         require(order.account != address(0), "OrderBook: non-existent order");
 
-        ISlippage(IVault(vault).slippage()).validateCreate(order.indexToken);
-        IPhase(IVault(vault).phase()).validateSizeDelta(_address, order.indexToken, order.sizeDelta, order.isLong);
+        IVault _vault = IVault(vault);
 
-        (uint256 currentPrice, ) = validatePositionOrderPrice(
+        ISlippage(_vault.slippage()).validateCreate(order.indexToken);
+        IPhase(_vault.phase()).validateSizeDelta(_address, order.indexToken, order.sizeDelta, order.isLong);
+
+        userOrderIndex.user = _address;
+        userOrderIndex.orderIndex = _orderIndex;
+
+        (uint256 currentPrice, uint256 sPrice,) = validateIncreasePositionOrderPrice(
             order.triggerAboveThreshold,
             order.triggerPrice,
             order.indexToken,
             order.isLong,
-            true
+            true,
+            order.sizeDelta
+        );
+        userOrderIndex.slippagePrice = sPrice;
+
+        IVaultUtils(_vault.vaultUtils()).validateLiquidationIncreaseOrderBook(
+            oneCode,
+            order.collateralToken,
+            order.indexToken,
+            order.sizeDelta,
+            order.isLong,
+            order.purchaseTokenAmount
         );
 
         emit ExecuteIncreaseOrder(
@@ -423,6 +440,7 @@ contract OrderBook is Synchron, ReentrancyGuard, IOStruct, IOrderStruct {
         ITimelock(timelock).setIsLeverageEnabled(vault, true);
         IRouter(router).pluginIncreasePosition(oneCode, order.account, order.collateralToken, order.indexToken, order.sizeDelta, order.isLong, order.purchaseTokenAmount);
         ITimelock(timelock).setIsLeverageEnabled(vault, false);
+        delete userOrderIndex;
     }
 
     function createDecreaseOrder(
@@ -820,6 +838,40 @@ contract OrderBook is Synchron, ReentrancyGuard, IOStruct, IOrderStruct {
     function _validateTriggerPrice(address _indexToken, bool _isLong,uint256 _triggerPrice) internal view {
         uint256 _price = _isLong ? IVault(vault).getMaxPrice(_indexToken) : IVault(vault).getMinPrice(_indexToken);
         require(_price * 10000 >= _triggerPrice, "_triggerPrice err");
+    }
+
+    // *******************************************************
+    struct UserOrderIndex {
+        address user;
+        uint256 orderIndex;
+        uint256 slippagePrice;
+    }
+
+    UserOrderIndex userOrderIndex;
+    function getCurrUserOrderIndex() external view returns(address, uint256, uint256) {
+        require(msg.sender == IVault(vault).vaultUtils(), "not vaultUtils");
+        return (userOrderIndex.user, userOrderIndex.orderIndex, userOrderIndex.slippagePrice);
+    }
+
+    function validateIncreasePositionOrderPrice(
+        bool _triggerAboveThreshold,
+        uint256 _triggerPrice,
+        address _indexToken,
+        bool _maximizePrice,
+        bool _raise,
+        uint256 _sizeDelta
+    ) public view returns (uint256, uint256, bool) {
+        uint256 currentPrice = _maximizePrice
+            ? IVault(vault).getMaxPrice(_indexToken) : IVault(vault).getMinPrice(_indexToken);
+
+        ISlippage slippage = ISlippage(IVault(vault).slippage()); 
+        uint256 sPrice = slippage.getVaultPrice(_indexToken, _sizeDelta, _maximizePrice, currentPrice);
+
+        bool isPriceValid = _triggerAboveThreshold ? sPrice > _triggerPrice : sPrice < _triggerPrice;
+        if (_raise) {
+            require(isPriceValid, "OrderBook: invalid price for execution");
+        }
+        return (currentPrice, sPrice, isPriceValid);
     }
 }
 

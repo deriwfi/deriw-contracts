@@ -18,6 +18,8 @@ import "../upgradeability/Synchron.sol";
 import "../Pendant/interfaces/ICoinData.sol";
 import "./interfaces/IDataReader.sol";
 import "./interfaces/IADL.sol";
+import "./interfaces/IPositionRouter.sol";
+
 
 contract Vault is Synchron, ReentrancyGuard, IEventStruct {
     using SafeMath for uint256;
@@ -361,45 +363,21 @@ contract Vault is Synchron, ReentrancyGuard, IEventStruct {
         bool _isLong,
         uint256 _amount
     ) external nonReentrant {
-        require(isFrom[_collateralToken] && _collateralToken == usdt, "TOKEN");
-        slippage.validateRemoveTime(_indexToken);
-
-        _validate(isLeverageEnabled, 28);
         _validateRouter();
-        phase.validateTokens(_collateralToken, _indexToken);
 
-        vaultUtils.validateIncreasePosition(_account, _collateralToken, _indexToken, _sizeDelta, _isLong);
-
+        (Position memory positionData, uint256 fee, uint256 feeTokens, uint256 price, uint256 collateralDeltaUsd) 
+            = vaultUtils.getCalculatePositionData(_key, _collateralToken, _indexToken);
+            
         bytes32 key = getPositionKey(_account, _collateralToken, _indexToken, _isLong);
-        Position storage position = positions[key];
+        iEvent = IncreaseEvent(_key, key, _account, _collateralToken, _indexToken, 
+            collateralDeltaUsd, _sizeDelta, _isLong, price, fee);
+
         phase.setKey(_account, _collateralToken, _indexToken, key, _isLong);
-        uint256 price = _isLong ? getMaxPrice(_indexToken) : getMinPrice(_indexToken);
-
-        price = slippage.getVaultPrice(_indexToken, _sizeDelta, _isLong, price);
-
-        if (position.size == 0) {
-            position.averagePrice = price;
-        }
-
-        if (position.size > 0 && _sizeDelta > 0) {
-            position.averagePrice = phase.getNextAveragePrice(_indexToken, position.size, position.averagePrice, _isLong, price, _sizeDelta, position.lastIncreasedTime);
-        }
-
-        (uint256 fee, uint256 feeTokens) = vaultUtils.collectMarginFees(_account, _collateralToken, _indexToken, _isLong, _sizeDelta);
+        positions[key] = positionData;
+        Position storage position = positions[key];
 
         _transferIn(_indexToken, _collateralToken, _amount);
-        _transferFee(phase.codeType(_key), _key, key, _collateralToken, _account, feeTokens, _indexToken);
-
-        uint256 collateralDeltaUsd = tokenToUsdMin(_collateralToken, _amount);
-        position.collateral += collateralDeltaUsd;
-        _validate(position.collateral >= fee, 29);
-        position.collateral -= fee;
-        position.size += _sizeDelta;
-        position.lastIncreasedTime = block.timestamp;
-
-        _validate(position.size > 0, 30);
-        _validatePosition(position.size, position.collateral);
-        validateLiquidation(_account, _collateralToken, _indexToken, _isLong, true);
+        _transferFee(phase.codeType(iEvent.createKey), _key, key, _collateralToken, iEvent.account, feeTokens, iEvent.indexToken);
 
         // reserve tokens to pay profits on the position
         uint256 reserveDelta = usdToTokenMax(_collateralToken, _sizeDelta);
@@ -433,19 +411,6 @@ contract Vault is Synchron, ReentrancyGuard, IEventStruct {
 
             _increaseGlobalShortSize(_indexToken, _sizeDelta);
         }
-
-        iEvent = IncreaseEvent(
-            _key, 
-            key, 
-            _account, 
-            _collateralToken, 
-            _indexToken, 
-            collateralDeltaUsd,
-            _sizeDelta, 
-            _isLong, 
-            price, 
-            fee
-        );
 
         emit IncreasePosition(iEvent);
         delete iEvent;
