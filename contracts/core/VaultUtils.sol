@@ -9,6 +9,7 @@ import "../Pendant/interfaces/IPhase.sol";
 import "./interfaces/IPositionRouter.sol";
 import "./interfaces/IOrderBook.sol";
 import "../upgradeability/Synchron.sol";
+import "../peripherals/interfaces/ITimelock.sol";
 
 /**
  * @title VaultUtils
@@ -215,6 +216,7 @@ contract VaultUtils is Synchron, IEventStruct {
         uint256 price = positionRouter.getSlippagePrice(iData.key, iData.indexToken, iData.sizeDelta, iData.isLong);
         iData.price = price;
 
+        _validateFeeRate();
         (Position memory position, uint256 fee, uint256 feeTokens, uint256 collateralDeltaUsd) = _getIncreaseData(iData);
         marketData[iData.key].position = position;
         marketData[iData.key].fee = fee;
@@ -255,6 +257,8 @@ contract VaultUtils is Synchron, IEventStruct {
         (address user, uint256 orderIndex, uint256 price) = orderBook.getCurrUserOrderIndex();
 
         IncreaseData memory iData = IncreaseData(_key, user, _collateralToken, _indexToken, _sizeDelta, _isLong, _amount, price);
+        
+        _validateFeeRate();
         (Position memory position, uint256 fee, uint256 feeTokens, uint256 collateralDeltaUsd) = _getIncreaseData(iData);
 
         limitData[user][orderIndex].position = position;
@@ -501,6 +505,7 @@ contract VaultUtils is Synchron, IEventStruct {
             price = limitData[user][orderIndex].price;
             collateralDeltaUsd = limitData[user][orderIndex].collateralDeltaUsd;
         }
+        require(position.size > 0 && position.size >= position.collateral, "position size err");
     }
 
     /**
@@ -535,5 +540,14 @@ contract VaultUtils is Synchron, IEventStruct {
         position.lastIncreasedTime = block.timestamp;
 
         return (position, fee, feeTokens, collateralDeltaUsd);
+    }
+
+    function _validateFeeRate() internal view {
+        ITimelock timelock = ITimelock(vault.gov());
+        uint256 mRate = vault.marginFeeBasisPoints();
+        require(
+            mRate == timelock.marginFeeBasisPoints() && mRate == timelock.maxMarginFeeBasisPoints(),
+            "fee rate err"
+        );
     }
 }

@@ -560,6 +560,7 @@ contract PositionRouter is Synchron, ReentrancyGuard, ITransferAmountData {
         );
 
         increaseIndex.remove(index);
+        delete slippagePrice[index];
 
         emit ExecuteIncreasePosition(eEvent);
 
@@ -953,13 +954,6 @@ contract PositionRouter is Synchron, ReentrancyGuard, ITransferAmountData {
         uint256 /*_price*/,
         uint256 _amount
     ) internal {
-        // uint256 markPrice = _isLong ? IVault(_vault).getMaxPrice(_indexToken) : IVault(_vault).getMinPrice(_indexToken);
-        // if (_isLong) {
-        //     require(markPrice <= _price, "markPrice > price");
-        // } else {
-        //     require(markPrice >= _price, "markPrice < price");
-        // }
-
         address timelock = IVault(_vault).gov();
 
         ITimelock(timelock).enableLeverage(_vault);
@@ -1048,6 +1042,11 @@ contract PositionRouter is Synchron, ReentrancyGuard, ITransferAmountData {
 
     function _cancelIncreasePosition(bytes32 _key) internal returns (bool) {
         uint256 index = increasePositionKeyToIndex[_key];
+
+        if(slippagePrice[index] != 0) {
+            delete slippagePrice[index];
+        }
+        
         if(!increaseIndex.contains(index)) {
             emit IncreasePositionNotExist(index);
             return true;
@@ -1055,8 +1054,10 @@ contract PositionRouter is Synchron, ReentrancyGuard, ITransferAmountData {
 
         IncreasePositionRequest memory request = _increasePositionRequests[_key];
 
-        bool shouldCancel = _validateCancellation(request.blockNumber, request.blockTime, request.account);
-        if (!shouldCancel) { return false; }
+        if(errState[index] == 0) {
+            bool shouldCancel = _validateCancellation(request.blockNumber, request.blockTime, request.account);
+            if (!shouldCancel) { return false; }
+        }
 
         uint256 time = request.blockTime;
         uint256 num = request.blockNumber;
