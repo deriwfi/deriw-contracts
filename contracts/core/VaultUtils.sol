@@ -216,7 +216,7 @@ contract VaultUtils is Synchron, IEventStruct {
         uint256 price = positionRouter.getSlippagePrice(iData.key, iData.indexToken, iData.sizeDelta, iData.isLong);
         iData.price = price;
 
-        _validateFeeRate();
+        _validateIndexTokenFeeRate(_indexToken);
         (Position memory position, uint256 fee, uint256 feeTokens, uint256 collateralDeltaUsd) = _getIncreaseData(iData);
         marketData[iData.key].position = position;
         marketData[iData.key].fee = fee;
@@ -368,10 +368,11 @@ contract VaultUtils is Synchron, IEventStruct {
      * @param _sizeDelta The change in position size
      * @return feeAmount The calculated fee amount
      */
-    function getPositionFee(address /* _account */, address /* _collateralToken */, address /* _indexToken */, bool /* _isLong */, uint256 _sizeDelta) public view returns (uint256) {
+    function getPositionFee(address /* _account */, address /* _collateralToken */, address _indexToken, bool /* _isLong */, uint256 _sizeDelta) public view returns (uint256) {
         if (_sizeDelta == 0) { return 0; }
+
         // _sizeDelta * (10000 - 2) / 10000
-        uint256 afterFeeUsd = _sizeDelta * (BASIS_POINTS_DIVISOR - vault.marginFeeBasisPoints()) / BASIS_POINTS_DIVISOR;
+        uint256 afterFeeUsd = _sizeDelta * (BASIS_POINTS_DIVISOR - getFeeBasisPoints(_indexToken)) / BASIS_POINTS_DIVISOR;
         return _sizeDelta - afterFeeUsd;//2%
     }
 
@@ -550,4 +551,26 @@ contract VaultUtils is Synchron, IEventStruct {
             "fee rate err"
         );
     }
+
+    // **************************************************************
+    event SetIndexTokenFeeBasisPoints(address indexed indexToken, uint256 feeBasisPoints);
+    mapping(address => uint256) public indexTokenFeeBasisPoints;
+    function setIndexTokenFeeBasisPoints(address _indexToken, uint256 _feeBasisPoints) external onlyGov() {
+        require(_indexToken != address(0) && _feeBasisPoints <= vault.MAX_FEE_BASIS_POINTS(), "setPoints err");
+        indexTokenFeeBasisPoints[_indexToken] = _feeBasisPoints;
+
+        emit SetIndexTokenFeeBasisPoints(_indexToken, _feeBasisPoints);
+    }
+
+    function getFeeBasisPoints(address _indexToken) public view returns(uint256) {
+        uint256 _feeBasisPoints = indexTokenFeeBasisPoints[_indexToken];
+        return _feeBasisPoints == 0 ? vault.marginFeeBasisPoints() : _feeBasisPoints;
+    }
+
+    function _validateIndexTokenFeeRate(address _indexToken) internal view {
+        if(indexTokenFeeBasisPoints[_indexToken] == 0) {
+            _validateFeeRate();
+        }
+    }
+
 }

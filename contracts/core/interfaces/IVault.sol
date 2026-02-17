@@ -181,4 +181,6 @@ interface IVault is IEventStruct {
         bool _isLong, 
         address _receiver
     ) external returns(uint256);
+
+    function MAX_FEE_BASIS_POINTS() external view returns(uint256);
 }
