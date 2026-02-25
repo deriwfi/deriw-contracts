@@ -258,7 +258,7 @@ contract VaultUtils is Synchron, IEventStruct {
 
         IncreaseData memory iData = IncreaseData(_key, user, _collateralToken, _indexToken, _sizeDelta, _isLong, _amount, price);
         
-        _validateFeeRate();
+        _validateIndexTokenFeeRate(_indexToken);
         (Position memory position, uint256 fee, uint256 feeTokens, uint256 collateralDeltaUsd) = _getIncreaseData(iData);
 
         limitData[user][orderIndex].position = position;
