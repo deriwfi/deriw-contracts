@@ -27,7 +27,7 @@ contract ReferralStorage is Synchron {
 
     event SetHandler(address handler, bool isActive);
     event BatchRegisterCode(RegisterData[] rData);
-    event SetTraderReferralCode(address user, address ref, string code);
+    event SetTraderReferralCode(address user, address ref, string code, uint8 sType);
 
     constructor() {
         initialized = true;
@@ -85,14 +85,9 @@ contract ReferralStorage is Synchron {
     }
 
     function _setTraderReferralCode(address _account, string memory _code) internal {
-        require(referral[_account] == address(0), "has referral");
-        address ref = codeOwner[_code];
-        require(ref != address(0) && _account != ref, "_code err");
-
-        secondaryAccount[ref].add(_account);
-        referral[_account] = ref;
-
-        emit SetTraderReferralCode(_account, ref, _code);
+        address ref = _setTraderReferralCodeFor(_account, _code);
+        
+        emit SetTraderReferralCode(_account, ref, _code, 0);
     }
 
     function getPartnerAccountAccountLength() external view returns(uint256) {
@@ -118,4 +113,36 @@ contract ReferralStorage is Synchron {
     function getSecondaryAccountLength(address account, address user) external view returns(bool) {
         return secondaryAccount[account].contains(user);
     }  
+
+    // *********************************************************************************
+    mapping(address => uint8) public sourceType;
+    mapping(address => bool) public sourceContract;
+    
+    event SetSourceContract(address handler, bool isActive);
+    function setSourceContract(address _sourceContract, bool _isActive) external onlyGov {
+        require(_sourceContract != address(0), "_sourceContract err");
+
+        sourceContract[_sourceContract] = _isActive;
+        emit SetSourceContract(_sourceContract, _isActive);
+    }
+
+    function setTraderReferralCodeBySourceContract(address _account, string memory _code, uint8 _sType) external {
+        require(sourceContract[msg.sender], "not sourceContract");
+        require(_sType > 0 && sourceType[_account] == 0, "_sType err");
+        address ref = _setTraderReferralCodeFor(_account, _code);
+
+        sourceType[_account] = _sType;
+        emit SetTraderReferralCode(_account, ref, _code, _sType);
+    }
+
+    function _setTraderReferralCodeFor(address _account, string memory _code) internal returns(address) {
+        require(referral[_account] == address(0), "has referral");
+        address ref = codeOwner[_code];
+        require(ref != address(0) && _account != ref, "_code err");
+
+        secondaryAccount[ref].add(_account);
+        referral[_account] = ref;
+
+        return ref;
+    }
 }
