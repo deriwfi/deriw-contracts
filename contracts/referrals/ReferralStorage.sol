@@ -127,7 +127,7 @@ contract ReferralStorage is Synchron {
     }
 
     function setTraderReferralCodeBySourceContract(address _account, string memory _code, uint8 _sType) external {
-        require(sourceContract[msg.sender], "not sourceContract");
+        require(sourceContract[msg.sender] || msg.sender == _account, "not sourceContract or _account err");
         require(_sType > 0 && sourceType[_account] == 0, "_sType err");
         address ref = _setTraderReferralCodeFor(_account, _code);
 
