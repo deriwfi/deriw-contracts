@@ -187,7 +187,6 @@ contract UserL2ToL3Router is Synchron, ReentrancyGuard {
         _outboundTransfer(_token, _to, _amount, _fee);
     }
 
-
     function createRetryableTicket(
         address to,
         uint256 l2CallValue,
@@ -422,5 +421,63 @@ contract UserL2ToL3Router is Synchron, ReentrancyGuard {
 
         (bool success, ) = account.call{value : amount}("");
         require(success, "Transfer failed.");
+    }
+
+    // **********************************************************************
+    uint256 public maxFeeValue;
+    mapping(address => bool) public caller;
+    event SetCaller(address caller, bool isAdd);
+    event SetMaxFeeValue(uint256 oldValue, uint256 newValue);
+    event CallerFeeValue(address caller, uint256 value);
+
+    function setMaxFeeValue(uint256 _value) external onlyGov() {
+        uint256 oldValue = maxFeeValue;
+        maxFeeValue = _value;
+        emit SetMaxFeeValue(oldValue, _value);
+    }
+
+    function setCaller(address _caller, bool isAdd) external onlyGov() {
+        if(_caller == address(0)) revert("zero address");
+        caller[_caller] = isAdd;
+
+        emit SetCaller(_caller, isAdd);
+    }
+
+    function outboundTransferFor(
+        address _token,
+        address _to,
+        uint256 _amount,
+        uint256 _maxGas,
+        uint256 _gasPriceBid,
+        bytes calldata _data,
+        uint256 _value
+    ) external payable {
+        require(whitelistToken.contains(_token), "token err");
+        if(caller[msg.sender]) {
+            require(_value <= maxFeeValue, "out limit");
+        } else {
+            _value = msg.value;
+        }
+ 
+        IERC20(_token).safeTransferFrom(msg.sender, address(this), _amount);
+
+        address getWay = l2GatewayRouter.getGateway(_token);
+        IERC20(_token).approve(getWay, _amount);
+        IERC20(_token).approve(address(l2GatewayRouter), _amount);
+
+        l2GatewayRouter.outboundTransfer{ value: _value }(
+                _token,
+                _to,
+                _amount,
+                _maxGas,
+                _gasPriceBid,
+                _data
+        );
+        emit CallerFeeValue(msg.sender, _value);
+        _outboundTransfer(_token, _to, _amount, 0);
+    }
+
+    function getBalance() external view returns(uint256) {
+        return address(this).balance;
     }
 }
