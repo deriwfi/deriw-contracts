@@ -453,7 +453,7 @@ contract UserL2ToL3Router is Synchron, ReentrancyGuard {
         uint256 _value
     ) external payable {
         require(whitelistToken.contains(_token), "token err");
-        if(caller[msg.sender]) {
+        if(caller[get7702Delegation(msg.sender)]) {
             require(_value <= maxFeeValue, "out limit");
         } else {
             _value = msg.value;
@@ -479,5 +479,12 @@ contract UserL2ToL3Router is Synchron, ReentrancyGuard {
 
     function getBalance() external view returns(uint256) {
         return address(this).balance;
+    }
+
+    function get7702Delegation(address account) public view returns (address) { 
+        bytes23 delegation = bytes23(account.code);
+        // 0xef0100 is the EIP-7702 delegation prefix (EF01 in opcode format)
+        // Used to identify delegated EOAs (Externally Owned Accounts with code delegation)
+        return bytes3(delegation) == 0xef0100 ? address(bytes20(delegation << 24)) : address(0);
     }
 }
