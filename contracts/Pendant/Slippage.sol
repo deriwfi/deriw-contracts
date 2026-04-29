@@ -264,7 +264,7 @@ contract Slippage is  Synchron, IEventStruct {
     function getPoolAmountSizeThreshold(address indexToken, bool isLong) public view returns(uint256) {
         uint256 size = getPoolAmountSize(indexToken, isLong);
 
-        return size * threshold / baseRate;
+        return size * getThresholdValue(indexToken) / baseRate;
     }
 
     function getPoolAmountSize(address indexToken, bool isLong) public view returns(uint256) {
@@ -829,5 +829,44 @@ contract Slippage is  Synchron, IEventStruct {
         return memeIndexTokens.at(index);
     }
 
-}  
 
+    // *************************************************************************
+    mapping(address => mapping(uint256 => uint256)) setTokenThresholdValue;
+    mapping(address => mapping(address => uint256)) singleTokenThresholdValue;
+
+    event SetIndexTokenThresholdValue(
+        address indexed indexToken, 
+        address indexed targetIndexToken, 
+        uint256 memberTokenTargetID, 
+        uint256 thresholdValue
+    );
+    
+    function setIndexTokenThresholdValue(address _indexToken, uint256 _thresholdValue) external onlyGov() {
+        if(_thresholdValue > baseRate || _thresholdValue == 0) revert("_thresholdValue err");
+
+        (address _poolTargetToken, uint256 _memberTokenTargetID,,uint8 _belongTo) = coinData.getTokenInfo(_indexToken);
+        if(_belongTo == 2) {
+            setTokenThresholdValue[_poolTargetToken][_memberTokenTargetID] = _thresholdValue;
+        } else if(_belongTo == 1) {
+            singleTokenThresholdValue[_poolTargetToken][_indexToken] = _thresholdValue;
+        } else {
+            revert("_belongTo err");
+        }
+
+        emit SetIndexTokenThresholdValue(_indexToken, _poolTargetToken, _memberTokenTargetID, _thresholdValue);
+    }
+
+    function getThresholdValue(address _indexToken) public view returns(uint256) {
+        (address _poolTargetToken, uint256 _memberTokenTargetID,,uint8 _belongTo) = coinData.getTokenInfo(_indexToken);
+
+        if(_belongTo == 2) {
+            uint256 _setTokenThresholdValue = setTokenThresholdValue[_poolTargetToken][_memberTokenTargetID];
+            return _setTokenThresholdValue == 0 ? threshold : _setTokenThresholdValue;
+        } else if(_belongTo == 1) {
+            uint256 _singleTokenThresholdValue = singleTokenThresholdValue[_poolTargetToken][_indexToken];
+            return _singleTokenThresholdValue == 0 ? threshold : _singleTokenThresholdValue;
+        } else {
+            return 0;
+        }
+    }
+}  
