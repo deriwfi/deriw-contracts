@@ -865,6 +865,8 @@ contract Slippage is  Synchron, IEventStruct {
         } else if(_belongTo == 1) {
             uint256 _singleTokenThresholdValue = singleTokenThresholdValue[_poolTargetToken][_indexToken];
             return _singleTokenThresholdValue == 0 ? threshold : _singleTokenThresholdValue;
+        } else if(_belongTo == 0) {
+            return threshold;
         } else {
             return 0;
         }
