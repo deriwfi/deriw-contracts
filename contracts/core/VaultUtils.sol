@@ -10,6 +10,7 @@ import "./interfaces/IPositionRouter.sol";
 import "./interfaces/IOrderBook.sol";
 import "../upgradeability/Synchron.sol";
 import "../peripherals/interfaces/ITimelock.sol";
+import "./interfaces/IDataReader.sol";
 
 /**
  * @title VaultUtils
@@ -556,6 +557,7 @@ contract VaultUtils is Synchron, IEventStruct {
     event SetIndexTokenFeeBasisPoints(address indexed indexToken, uint256 feeBasisPoints);
     mapping(address => uint256) public indexTokenFeeBasisPoints;
     function setIndexTokenFeeBasisPoints(address _indexToken, uint256 _feeBasisPoints) external onlyGov() {
+        _indexToken = IDataReader(slippage.dataReader()).getIndexToken(_indexToken); 
         require(_indexToken != address(0) && _feeBasisPoints <= vault.MAX_FEE_BASIS_POINTS(), "setPoints err");
         indexTokenFeeBasisPoints[_indexToken] = _feeBasisPoints;
 
@@ -563,11 +565,13 @@ contract VaultUtils is Synchron, IEventStruct {
     }
 
     function getFeeBasisPoints(address _indexToken) public view returns(uint256) {
+        _indexToken = IDataReader(slippage.dataReader()).getIndexToken(_indexToken);    
         uint256 _feeBasisPoints = indexTokenFeeBasisPoints[_indexToken];
         return _feeBasisPoints == 0 ? vault.marginFeeBasisPoints() : _feeBasisPoints;
     }
 
     function _validateIndexTokenFeeRate(address _indexToken) internal view {
+        _indexToken = IDataReader(slippage.dataReader()).getIndexToken(_indexToken);  
         if(indexTokenFeeBasisPoints[_indexToken] == 0) {
             _validateFeeRate();
         }

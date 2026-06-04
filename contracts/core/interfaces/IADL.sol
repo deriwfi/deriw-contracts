@@ -11,4 +11,10 @@ interface IADL {
     function increaseGlobalShortSize(address _indexToken, uint256 _amount) external returns(uint256 size);
 
     function decreaseGlobalShortSize(address _indexToken, uint256 _amount) external returns(uint256 _globalShortSize);
+
+    function dataReader() external view returns(address);
+
+    function getGlobalLongAndShortSizes(
+        address _indexToken
+    ) external view returns(uint256, uint256);
 }

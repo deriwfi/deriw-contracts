@@ -12,6 +12,8 @@ import "../meme/interfaces/IMemeStruct.sol";
 import "../Pendant/interfaces/IPhase.sol";
 import "@openzeppelin/contracts/utils/structs/EnumerableSet.sol";
 import "../upgradeability/Synchron.sol";
+import "../meme/interfaces/IMemeFactory.sol";
+import "../Pendant/interfaces/ISlippage.sol";
 
 /**
  * @title ADL (Automatic Deleveraging) Contract
@@ -537,7 +539,6 @@ contract ADL is Synchron {
      */
     function getPoolRealTimeNetValue(address _indexToken) external view returns(uint256 value) {
         address targetIndexToken = dataReader.getTargetIndexToken(_indexToken);
-
         return _getPoolRealTimeNetValue(targetIndexToken);
     }
 
@@ -674,7 +675,10 @@ contract ADL is Synchron {
         returns(address pool, uint256 currID)
     {
         if(memeData.isAddMeme(indexTargetToken)) {
-            pool = memeData.tokenToPool(indexTargetToken);
+            pool = IMemeFactory(dataReader.memeFactory()).channelMappedTokenPool(indexTargetToken);
+            if(pool == address(0)) {
+                pool = memeData.tokenToPool(indexTargetToken);
+            }
         } else {
             pool = poolDataV2.tokenToPool(indexTargetToken);
             currID = poolDataV2.currPeriodID(pool);
@@ -715,17 +719,8 @@ contract ADL is Synchron {
      */
     function _getPoolRealTimeNetValue(address targetIndexToken) internal view returns(uint256 value) {
         IPhase _phase = IPhase(vault.phase());
-        if(memeData.isAddMeme(targetIndexToken)) {
-            (address pool,) = _getCurrPool(targetIndexToken);
-            IMemeStruct.MemeState memory mState = memeData.getMemeState(pool);
-            value = _phase.getPoolRealTimeNetValue(targetIndexToken, usdt, mState.totalGlpAmount);
-
-        } else {
-            (address pool, uint256 currID) = _getCurrPool(targetIndexToken);
-            IStruct.FoundStateV2 memory fState = poolDataV2.getFoundState(pool, currID);
-            value = _phase.getPoolRealTimeNetValue(targetIndexToken, usdt, fState.glpAmount);
-
-        }
+        uint256 totalGlpAmount = ISlippage(vault.slippage()).glpTokenSupply(targetIndexToken, usdt);
+        value = _phase.getPoolRealTimeNetValue(targetIndexToken, usdt, totalGlpAmount);
     }
 
     /**
@@ -734,6 +729,14 @@ contract ADL is Synchron {
      * @return value The leverage trigger value
      */
     function _getLeverageTriggerValue(address targetIndexToken) internal view returns(uint256 value) {
+        (address pool,,, address mappedTargetToken) = IMemeFactory(dataReader.memeFactory()).getChannelMappedTokenPoolInfo(targetIndexToken);
+        if(pool != address(0)) {
+            value = leverageTriggerValue[targetIndexToken];
+            if(value > 0) {
+                return value;
+            }
+            targetIndexToken = mappedTargetToken;
+        }
         value = leverageTriggerValue[targetIndexToken];
         if(value == 0) {
             value = DEFAULT_LEVERAGE_TRIGGER_VALUE;
@@ -746,6 +749,14 @@ contract ADL is Synchron {
      * @return value The leverage set value
      */
     function _getLeverageSetValue(address targetIndexToken) internal view returns(uint256 value) {
+        (address pool,,, address mappedTargetToken) = IMemeFactory(dataReader.memeFactory()).getChannelMappedTokenPoolInfo(targetIndexToken);
+        if(pool != address(0)) {
+            value = leverageSetValue[targetIndexToken];
+            if(value > 0) {
+                return value;
+            }
+            targetIndexToken = mappedTargetToken;
+        }
         value = leverageSetValue[targetIndexToken];
         if(value == 0) {
             value = DEFAULT_LEVERAGE_SET_VALUE;
@@ -762,22 +773,26 @@ contract ADL is Synchron {
         address targetIndexToken
     ) internal view returns(uint256 longSize, uint256 shortSize) {
         {
-            uint256 _lenSingleToken = coinData.getCurrSingleTokensLength(targetIndexToken);
+            uint256 _lenSingleToken = dataReader.getCurrSingleTokensLength(targetIndexToken);
             for(uint256 i = 0; i < _lenSingleToken; i++) {
-                (address _singleToken,) = coinData.getCurrSingleToken(targetIndexToken, i);
-                longSize += vault.globalLongSizes(_singleToken);
-                shortSize += vault.globalShortSizes(_singleToken);
+                (address _singleToken,) = dataReader.getCurrSingleToken(targetIndexToken, i);
+                if(_singleToken != address(0)) {
+                    longSize += vault.globalLongSizes(_singleToken);
+                    shortSize += vault.globalShortSizes(_singleToken);
+                }
             }
 
-            uint256 _lenMemberTokenTargetID = coinData.getCurrMemberTokenTargetIDLength(targetIndexToken);
+            uint256 _lenMemberTokenTargetID = dataReader.getCurrMemberTokenTargetIDLength(targetIndexToken);
             for(uint256 i = 0; i < _lenMemberTokenTargetID; i++) {
-                (uint256 _memberTokenTargetID,) = coinData.getCurrMemberTokenTargetID(targetIndexToken, i);
+                (uint256 _memberTokenTargetID,) = dataReader.getCurrMemberTokenTargetID(targetIndexToken, i);
 
-                uint256 _lenMemberTokens = coinData.getCurrMemberTokensLength(targetIndexToken, _memberTokenTargetID);
+                uint256 _lenMemberTokens = dataReader.getCurrMemberTokensLength(targetIndexToken, _memberTokenTargetID);
                 for(uint256 j = 0; j < _lenMemberTokens; j++) {
-                    address _memberToken = coinData.getCurrMemberToken(targetIndexToken, _memberTokenTargetID, j);
-                    longSize += vault.globalLongSizes(_memberToken);
-                    shortSize += vault.globalShortSizes(_memberToken);
+                    address _memberToken = dataReader.getCurrMemberToken(targetIndexToken, _memberTokenTargetID, j);
+                    if(_memberToken != address(0)) {
+                        longSize += vault.globalLongSizes(_memberToken);
+                        shortSize += vault.globalShortSizes(_memberToken);
+                    }
                 }
             }
         }

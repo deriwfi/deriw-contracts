@@ -7,6 +7,10 @@ import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import "../upgradeability/Synchron.sol";
 import "../core/interfaces/ITransferAmountData.sol";
 import "../meme/interfaces/IMemeRisk.sol";
+import "../core/interfaces/IADL.sol";
+import "../core/interfaces/IDataReader.sol";
+import "../meme/interfaces/IMemeFactory.sol";
+import "../core/interfaces/IVault.sol";
 
 contract ReferralData is Synchron, ITransferAmountData {
     using SafeERC20 for IERC20;
@@ -149,13 +153,20 @@ contract ReferralData is Synchron, ITransferAmountData {
 
             tData.beforeAmount = getAmount(USDT, address(this));
             tData.beforeValue = getAmount(USDT, user);
+            IDataReader dataReader = IDataReader(IADL(adlContract).dataReader());
+            uint256 poolToChannelID = IMemeFactory(dataReader.memeFactory()).poolToChannelID(user);
+            if(poolToChannelID != 0) {
+                address vault = dataReader.vault();
+                user = vault;
+                IVault(vault).directPoolDeposit(indexToToken[index], USDT, amount);
+            } 
             IERC20(USDT).safeTransfer(user, amount);
             tData.afterAmount = getAmount(USDT, address(this));
             tData.afterValue = getAmount(USDT, user);
 
             emit TransferTo(address(this), user, amount, tData);
             
-            if(user == address(memeRisk)) {
+            if(user == address(memeRisk) && poolToChannelID == 0) {
                 memeRisk.addFeeAmount(indexToToken[index], index, amount);
             }
         }

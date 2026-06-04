@@ -19,4 +19,10 @@ interface IVaultPriceFeed {
         uint256 _priceDecimals,
         bool _isStrictStable
     ) external;
+    function priceDecimals(address token) external view returns (uint256);
+    function spreadBasisPoints(address token) external view returns (uint256);
+    function strictStableTokens(address token) external view returns (bool);
+    function lastAdjustmentTimings(address token) external view returns (uint256);
+    function getPriceV1(address _token, bool _maximise) external view returns (uint256);
+    function getSecondaryPrice(address _token, uint256 _referencePrice, bool _maximise) external view returns (uint256);
 }

@@ -49,4 +49,6 @@ interface IVaultUtils is IEventStruct  {
         bool _isLong,
         uint256 _amount
     ) external returns(bool);
+
+    function orderBook() external view returns (address);
 }

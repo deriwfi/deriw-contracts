@@ -18,6 +18,8 @@ import "../referrals/interfaces/IReferralData.sol";
 import "./interfaces/ITransferAmountData.sol";
 import "../upgradeability/Synchron.sol";
 import "./interfaces/IVaultUtils.sol";
+import "../meme/interfaces/IMemeFactory.sol";
+import "./interfaces/IDataReader.sol";
 
 contract PositionRouter is Synchron, ReentrancyGuard, ITransferAmountData {
     using Address for address;
@@ -373,6 +375,7 @@ contract PositionRouter is Synchron, ReentrancyGuard, ITransferAmountData {
     ) external nonReentrant returns (bytes32) {
         require(_referralCode == bytes32(0), "_referralCode err");
         require(!blackList.isFusing() && !blackList.isStop(), "can not create");
+        _indexToken = IMemeFactory(IDataReader(IVault(vault).dataReader()).memeFactory()).createChannelToken(msg.sender, _indexToken, _sizeDelta, _isLong);
         _validateAcceptablePrice(_indexToken, _isLong, _acceptablePrice);
         uint256 len = _path.length;
         require(len == 1 || len == 2, "408");

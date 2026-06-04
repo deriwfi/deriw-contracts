@@ -11,4 +11,5 @@ interface IReferralStorage {
     function getPartnerAccountAccountLength(address account) external view returns(uint256);
     function getPartnerAccountAccount(address account, uint256 index) external view returns(address);
     function getPartnerAccountAccountIsIn(address account, address user) external view returns(bool);
+    function referral(address account) external view returns (address);
 }

@@ -4,7 +4,6 @@ pragma solidity ^0.8.0;
 
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
-import "@openzeppelin/contracts/utils/math/SafeMath.sol";
 
 import "../libraries/utils/ReentrancyGuard.sol";
 import "./interfaces/IVaultUtils.sol";
@@ -20,9 +19,7 @@ import "./interfaces/IDataReader.sol";
 import "./interfaces/IADL.sol";
 import "./interfaces/IPositionRouter.sol";
 
-
 contract Vault is Synchron, ReentrancyGuard, IEventStruct {
-    using SafeMath for uint256;
     using SafeERC20 for IERC20;
 
     uint256 public constant MIN_LEVERAGE = 10000; // 1x
@@ -165,7 +162,7 @@ contract Vault is Synchron, ReentrancyGuard, IEventStruct {
 
 
     modifier onlyWhitelistedToken(address _token) {
-        require(whitelistedTokens[_token], "WHITE");
+        require(dataReader().whitelistedTokens(_token), "WHITE");
         _;
     }
 
@@ -321,7 +318,7 @@ contract Vault is Synchron, ReentrancyGuard, IEventStruct {
 
     function directPoolDeposit(address _indexToken, address _collateralToken, uint256 _amount) external {
         _validateManager();
-        _validate(_amount > 0 && whitelistedTokens[_indexToken], 15);
+        _validate(_amount > 0 && dataReader().whitelistedTokens(_indexToken), 15);
 
         _transferIn(_indexToken, _collateralToken, _amount);
 
@@ -329,7 +326,7 @@ contract Vault is Synchron, ReentrancyGuard, IEventStruct {
         emit DirectPoolDeposit(_indexToken, _collateralToken, _amount);
     }
 
-    function addTokenBalances(address _indexToken, address _collateralToken, uint256 _amount)  onlyWhitelistedToken(_indexToken) external {
+    function addTokenBalances(address _indexToken, address _collateralToken, uint256 _amount) onlyWhitelistedToken(_indexToken) external {
         _validateManager();
         _transferIn(_indexToken, _collateralToken, _amount);
 
@@ -738,10 +735,12 @@ contract Vault is Synchron, ReentrancyGuard, IEventStruct {
     }
 
     function getMaxPrice(address _token) public  view returns (uint256) {
+        _token = dataReader().getIndexToken(_token);
         return IVaultPriceFeed(priceFeed).getPrice(_token, true, includeAmmPrice, false);
     }
 
     function getMinPrice(address _token) public  view returns (uint256) {
+        _token = dataReader().getIndexToken(_token);
         return IVaultPriceFeed(priceFeed).getPrice(_token, false, includeAmmPrice, false);
     }
 

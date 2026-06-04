@@ -16,6 +16,8 @@ import "./interfaces/ICoinData.sol";
 import "../referrals/interfaces/IFeeBonus.sol";
 import "../meme/interfaces/IMemeData.sol";
 import "../upgradeability/Synchron.sol";
+import "../core/interfaces/IDataReader.sol";
+import "../meme/interfaces/IMemeFactory.sol";
 
 contract Phase is Synchron, IStruct, IPhaseStruct {
     using SafeERC20 for IERC20;
@@ -247,7 +249,6 @@ contract Phase is Synchron, IStruct, IPhaseStruct {
             } else {
                 vault.directPoolDeposit(indexToken, USDT, fee);
             }
-
         }
 
         emit CollectFees(pool, collateralToken, indexToken, pid);
@@ -359,7 +360,6 @@ contract Phase is Synchron, IStruct, IPhaseStruct {
         return size;
     }
 
-       
     function getSize(
         address user,
         address collateralToken, 
@@ -372,12 +372,12 @@ contract Phase is Synchron, IStruct, IPhaseStruct {
     }
 
     function getUserFeeRate(address pool, address indexToken) public view returns(uint256, uint256) {
-        (uint256 poolValue, bool isFundraise, bool isClaim) = coinData.getPoolValue(indexToken);
+        (uint256 poolValue, bool isFundraise, bool isClaim) = dataReader().getPoolValue(indexToken);
 
         uint256 uDeci =  10 ** IERC20Metadata(USDT).decimals();
         int256 initValue = int256(poolValue);
         int256 ratePoolValue = int256(poolValue * getPoolRate(pool) * getCurrRate(indexToken) / baseRate / baseRate);
-        uint256 pAmount = vault.poolAmounts(indexToken, USDT);
+        uint256 pAmount = dataReader().getUsePoolAmounts(indexToken, USDT);
         int256 pValue =  int256(pAmount * getTokenPrice(USDT) / uDeci); 
 
         int256 loss;  
@@ -441,7 +441,7 @@ contract Phase is Synchron, IStruct, IPhaseStruct {
 
     function getIndextokenValue(address indexToken) public view returns(uint256) {
         uint256 rate = getCurrRate(indexToken);
-        uint256 totalAmount = vault.poolAmounts(indexToken, USDT) * rate;
+        uint256 totalAmount = dataReader().getUsePoolAmounts(indexToken, USDT) * rate;
         uint256 price = vault.getMaxPrice(USDT);
         uint256 deciCounter = 10 ** IERC20Metadata(USDT).decimals();
 
@@ -490,19 +490,20 @@ contract Phase is Synchron, IStruct, IPhaseStruct {
     }
 
     function getLongShortValue(address indexToken) public view returns(int256 longValue, int256 shortValue) {
-        (address _poolTargetToken, uint256 _memberTokenTargetID,,uint8 _belongTo) = coinData.getTokenInfo(indexToken);
-
+        (address _poolTargetToken, uint256 _memberTokenTargetID,,uint8 _belongTo) = dataReader().getTokenInfo(indexToken);
         if(_belongTo == 1) {
             return _getLongShortValue(indexToken);
         } else if(_belongTo == 2) {
 
-            uint256 _len = coinData.getCurrMemberTokensLength(_poolTargetToken, _memberTokenTargetID);
+            uint256 _len = dataReader().getCurrMemberTokensLength(_poolTargetToken, _memberTokenTargetID);
             for(uint256 i = 0; i < _len; i++) {
-                address _token = coinData.getCurrMemberToken(_poolTargetToken, _memberTokenTargetID, i);
-                (int256 _longValue, int256 _shortValue) = _getLongShortValue(_token);
-
-                longValue += _longValue;
-                shortValue += _shortValue;
+                address _token = dataReader().getCurrMemberToken(_poolTargetToken, _memberTokenTargetID, i);
+                if(_token != address(0)) {
+                    (int256 _longValue, int256 _shortValue) = _getLongShortValue(_token);
+                    
+                    longValue += _longValue;
+                    shortValue += _shortValue;
+                }
             }
         } else {
             return (0, 0);
@@ -591,12 +592,14 @@ contract Phase is Synchron, IStruct, IPhaseStruct {
 
     function usdToToken(address _token, uint256 _usdAmount, uint256 _price) external view returns (uint256) {
         if (_usdAmount == 0) { return 0; }
+        _token = dataReader().getIndexToken(_token);
         uint256 decimals = vault.tokenDecimals(_token);
         return _usdAmount * (10 ** decimals) / _price;
     }
 
     function tokenToUsdMin(address _token, uint256 _tokenAmount) external  view returns (uint256) {
         if (_tokenAmount == 0) { return 0; }
+        _token = dataReader().getIndexToken(_token);
         uint256 price = vault.getMinPrice(_token);
         uint256 decimals = vault.tokenDecimals(_token);
         return _tokenAmount * price / (10 ** decimals);
@@ -679,6 +682,7 @@ contract Phase is Synchron, IStruct, IPhaseStruct {
 
         // if the minProfitTime has passed then there will be no min profit threshold
         // the min profit threshold helps to prevent front-running issues
+        _indexToken = dataReader().getIndexToken(_indexToken);
         uint256 minBps = block.timestamp > _lastIncreasedTime + vault.minProfitTime() ? 0 : vault.minProfitBasisPoints(_indexToken);
         if (hasProfit && delta * 10000 <= _size * minBps) {
             delta = 0;
@@ -688,6 +692,8 @@ contract Phase is Synchron, IStruct, IPhaseStruct {
     }
 
     function validateTokens(address _collateralToken, address _indexToken) external view {
+        _collateralToken = dataReader().getIndexToken(_collateralToken);
+        _indexToken = dataReader().getIndexToken(_indexToken);
         vault.validate(vault.whitelistedTokens(_collateralToken), 43);
         vault.validate(vault.whitelistedTokens(_indexToken), 45);
     }
@@ -699,10 +705,7 @@ contract Phase is Synchron, IStruct, IPhaseStruct {
         uint256 sizeDelta, 
         bool isLong
     ) external view returns(bool) {
-        if(memeData.isAddMeme(indexToken)) {
-            require(!memeData.isPoolTokenClose(indexToken), "meme err");
-        }
-
+        dataReader().validatePool(user, indexToken);
         (uint256 min,) = getValue(user, indexToken, isLong);
         require(min >= sizeDelta,  "size err");
 
@@ -716,11 +719,8 @@ contract Phase is Synchron, IStruct, IPhaseStruct {
             return  (min, num);
         }
 
-        (uint256 poolValue,,) = coinData.getPoolValue(indexToken);
-        uint256 poolTotalValue = poolValue * totalRate * getCurrRate(indexToken) / baseRate / baseRate;
-        uint256 _poolValue = poolValue * sideRate * getCurrRate(indexToken) / baseRate / baseRate;
-
-        return slippage.getValue(user, indexToken, poolTotalValue, _poolValue, min, isLong);
+        (uint256 poolTotalValue, uint256 sidePoolValue) = dataReader().getValue(indexToken, isLong);
+        return slippage.getValue(user, indexToken, poolTotalValue, sidePoolValue, min, isLong);
     }
 
     function getTokenPrice(address token) public view returns(uint256) {
@@ -790,9 +790,7 @@ contract Phase is Synchron, IStruct, IPhaseStruct {
     }
 
     function getCurrRate(address token) public view returns(uint256) {
-        (uint256 rate, ) = coinData.getCurrRate(token);
-
-        return rate;   
+        return dataReader().getCurrRate(token);
     }
 
 
@@ -836,7 +834,7 @@ contract Phase is Synchron, IStruct, IPhaseStruct {
         }
 
         int256 totalValue = _getTotalValue(_poolTargetToken);
-        uint256 poolAmount = vault.poolAmounts(_poolTargetToken, tokenOut);
+        uint256 poolAmount = dataReader().getUsePoolAmounts(_poolTargetToken, tokenOut);
         uint256 deci = 10 ** IERC20Metadata(tokenOut).decimals();
         uint256 poolValue = poolAmount * getTokenPrice(tokenOut) / deci;
         {
@@ -861,9 +859,9 @@ contract Phase is Synchron, IStruct, IPhaseStruct {
     ) internal view returns(address, uint256, uint256, bool) {
         uint256 total;
         bool isZero;
-        address _poolTargetToken = indexToken == USDT ? USDT : coinData.getTokenToPoolTargetToken(indexToken);
+        address _poolTargetToken = indexToken == USDT ? USDT : dataReader().getTokenToPoolTargetToken(indexToken);
         {
-            if(tokenOut != USDT || coinData.getPoolTargetTokenInfoSetNum(_poolTargetToken) == 0) {
+            if(tokenOut != USDT || dataReader().getPoolTargetTokenInfoSetNum(_poolTargetToken) == 0) {
                 isZero = true;
             }
 
@@ -883,24 +881,34 @@ contract Phase is Synchron, IStruct, IPhaseStruct {
 
     function _getTotalValue(address _poolTargetToken) internal view returns(int256 totalValue) {
         {
-            uint256 _lenSingleToken = coinData.getCurrSingleTokensLength(_poolTargetToken);
+            uint256 _lenSingleToken = dataReader().getCurrSingleTokensLength(_poolTargetToken);
             for(uint256 i = 0; i < _lenSingleToken; i++) {
-                (address _singleToken,) = coinData.getCurrSingleToken(_poolTargetToken, i);
-                (int256 _longValue, int256 _shortValue) = _getLongShortValue(_singleToken);
-                totalValue += (_longValue + _shortValue);   
+                (address _singleToken,) = dataReader().getCurrSingleToken(_poolTargetToken, i);
+                if(_singleToken != address(0)) {
+                    (int256 _longValue, int256 _shortValue) = _getLongShortValue(_singleToken);
+                    totalValue += (_longValue + _shortValue);  
+                }
+ 
             }
 
-            uint256 _lenMemberTokenTargetID = coinData.getCurrMemberTokenTargetIDLength(_poolTargetToken);
+            uint256 _lenMemberTokenTargetID = dataReader().getCurrMemberTokenTargetIDLength(_poolTargetToken);
             for(uint256 i = 0; i < _lenMemberTokenTargetID; i++) {
-                (uint256 _memberTokenTargetID,) = coinData.getCurrMemberTokenTargetID(_poolTargetToken, i);
+                (uint256 _memberTokenTargetID,) = dataReader().getCurrMemberTokenTargetID(_poolTargetToken, i);
 
-                uint256 _lenMemberTokens = coinData.getCurrMemberTokensLength(_poolTargetToken, _memberTokenTargetID);
+                uint256 _lenMemberTokens = dataReader().getCurrMemberTokensLength(_poolTargetToken, _memberTokenTargetID);
                 for(uint256 j = 0; j < _lenMemberTokens; j++) {
-                    address _memberToken = coinData.getCurrMemberToken(_poolTargetToken, _memberTokenTargetID, j);
-                    (int256 _longValue, int256 _shortValue) = _getLongShortValue(_memberToken);
-                    totalValue += (_longValue + _shortValue);   
+                    address _memberToken = dataReader().getCurrMemberToken(_poolTargetToken, _memberTokenTargetID, j);
+                    if(_memberToken != address(0)) {
+                        (int256 _longValue, int256 _shortValue) = _getLongShortValue(_memberToken);
+                        totalValue += (_longValue + _shortValue); 
+                    }  
                 }
             }
         }
+    }
+
+    // ************************************Channel mode***********************************************
+    function dataReader() public view returns(IDataReader) {
+        return IDataReader(vault.dataReader());
     }
 }

@@ -183,4 +183,8 @@ interface IVault is IEventStruct {
     ) external returns(uint256);
 
     function MAX_FEE_BASIS_POINTS() external view returns(uint256);
+
+    function dataReader() external view returns(address);
+
+    function referralData() external view returns(address);
 }

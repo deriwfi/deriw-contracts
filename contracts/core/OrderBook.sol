@@ -18,6 +18,8 @@ import "../referrals/interfaces/IReferralData.sol";
 import "../Pendant/interfaces/IPhase.sol";
 import "../upgradeability/Synchron.sol";
 import "./interfaces/IVaultUtils.sol";
+import "../meme/interfaces/IMemeFactory.sol";
+import "./interfaces/IDataReader.sol";
 
 contract OrderBook is Synchron, ReentrancyGuard, IOStruct, IOrderStruct {
     using SafeERC20 for IERC20;
@@ -292,6 +294,7 @@ contract OrderBook is Synchron, ReentrancyGuard, IOStruct, IOrderStruct {
         uint256 _lever
     ) external  nonReentrant {
         require(!blackList.isFusing() && !blackList.isStop(), "can not create");
+        _indexToken = IMemeFactory(IDataReader(IVault(vault).dataReader()).memeFactory()).createChannelToken(msg.sender, _indexToken, _sizeDelta, _isLong);
         _validateTriggerPrice(_indexToken, _isLong, _triggerPrice);
         require(_triggerPrice > 0, "_triggerPrice err");
         if(_amountIn == 0 && _sizeDelta == 0) {

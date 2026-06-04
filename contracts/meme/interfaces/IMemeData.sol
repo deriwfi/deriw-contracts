@@ -45,4 +45,29 @@ interface IMemeData is IMemeStruct {
     function getUserDepositPool(address user, uint256 index) external view returns(address);
 
     function addMemeState(address indexToken) external;
+
+    function usdt() external view returns(address);
+
+    function memeFactory() external view returns(address);
+
+    function vault() external view returns(address);
+
+    function depositChannel(address user, address pool, uint256 amount) external;
+
+    function claimChannel(address user, address pool, uint256 amount) external;
+
+    function getGLP() external view returns(address);
+
+    function unstakeAndRedeemGlp(
+        address user,
+        address pool,
+        address indexToken, 
+        address tokenOut, 
+        uint256 amount, 
+        address receiver
+    ) external returns (uint256);
+
+    function channelUserInfo(address pool, address user, uint256 index) external view returns(uint256 depositAmount, uint256 glpAmount, uint256 unStakeAmount);
+
+    function getChannelOutAmount(address indexToken, address tokenOut, uint256 amount) external view returns(uint256 outAmount, uint256 burnGlpAmount, uint256 totalOutAmount, uint256 riskBuffer);
 }

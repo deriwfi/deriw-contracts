@@ -74,4 +74,10 @@ interface ICoinData is IPhaseStruct {
 
 
     function poolDataV2() external view returns(address);
+
+    function createChannelToken(address _pool, address _indexToken) external returns(address);
+
+    function getChannelPoolTargetToken(address _pool) external view returns(address poolTargetToken, address mappedPoolTargetToken);
+
+    function memeData() external view returns(address);
 }

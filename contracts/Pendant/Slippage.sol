@@ -14,6 +14,7 @@ import "../core/interfaces/IOrderBook.sol";
 import "./interfaces/ICoinData.sol";
 import "../upgradeability/Synchron.sol";
 import "../core/interfaces/IDataReader.sol";
+import "../meme/interfaces/IMemeFactory.sol";
 
 contract Slippage is  Synchron, IEventStruct {
     using SafeERC20 for IERC20;
@@ -91,7 +92,7 @@ contract Slippage is  Synchron, IEventStruct {
     }
 
     modifier onlyGlpManager() {
-        require(msg.sender == glpManager, "not glpManager");
+        require(msg.sender == glpManager || msg.sender == coinData.memeData(), "not manager");
         _;
     }
 
@@ -186,7 +187,7 @@ contract Slippage is  Synchron, IEventStruct {
         _autoDecreasePosition(_account, _collateralToken, _indexToken, _feeAccount, _isLong);
     }
 
-    
+
     function addGlpAmount(address _indexToken, address _collateralToken, uint256 _amount) external onlyGlpManager {
         _indexToken = dataReader.getTargetIndexToken(_indexToken);
         _glpTokenSupply[_indexToken][_collateralToken] += _amount;
@@ -243,7 +244,7 @@ contract Slippage is  Synchron, IEventStruct {
         uint256 _longSize = getPoolAmountSizeThreshold(indexToken, true);
         if(netAmount > _longSize) {
             uint256 value = (size + netAmount - _longSize);
-            return value * factor * muti / (globalLongSizes * baseRate);
+            return value * getFactor(indexToken) * muti / (globalLongSizes * baseRate);
         }
 
         return 0;
@@ -256,7 +257,7 @@ contract Slippage is  Synchron, IEventStruct {
 
         if(netAmount > _shortSize) {
             uint256 value = (size + netAmount - _shortSize);
-            return value *  factor *  muti / (globalShortSizes * baseRate);
+            return value * getFactor(indexToken) *  muti / (globalShortSizes * baseRate);
         }
         return 0;
     }
@@ -268,7 +269,7 @@ contract Slippage is  Synchron, IEventStruct {
     }
 
     function getPoolAmountSize(address indexToken, bool isLong) public view returns(uint256) {
-        uint256 amount = vault.poolAmounts(indexToken, USDT);
+        uint256 amount = dataReader.getUsePoolAmounts(indexToken, USDT);
         uint256 deci = 10 ** IERC20Metadata(USDT).decimals();
         uint256 price;
         if(isLong) {
@@ -318,6 +319,7 @@ contract Slippage is  Synchron, IEventStruct {
         bool isFrom
     ) 
     {        
+        _token = dataReader.getIndexToken(_token);
         tokenDecimals = vault.tokenDecimals(_token);
         tokenWeights = vault.tokenWeights(_token);
         minProfitBasisPoints = vault.minProfitBasisPoints(_token);
@@ -360,14 +362,32 @@ contract Slippage is  Synchron, IEventStruct {
             return (0, 2);
         }
 
-        int256 longNetValue = int256(globalLongSizes) - int256(globalShortSizes);
-        int256 shortNetValue = int256(globalShortSizes) - int256(globalLongSizes);
+        address pool = memeFactory().channelMappedTokenPool(indexToken);
+        if(pool == address(0)) {
+            int256 longNetValue = int256(globalLongSizes) - int256(globalShortSizes);
+            int256 shortNetValue = int256(globalShortSizes) - int256(globalLongSizes);
 
-
-        if(isLong) {
-            return getMinValue(min, _poolValue, longNetValue);
+            if(isLong) {
+                return getMinValue(min, _poolValue, longNetValue);
+            } else {
+                return getMinValue(min, _poolValue, shortNetValue);
+            }
         } else {
-            return getMinValue(min, _poolValue, shortNetValue);
+            if(isLong) {
+                if(_poolValue > globalLongSizes) {
+                    min = getMin(min, _poolValue - globalLongSizes);
+                    return (min, 6);
+                } else {
+                    return (0, 7);
+                }
+            } else {
+                if(_poolValue > globalShortSizes) {
+                    min = getMin(min, _poolValue - globalShortSizes);
+                    return (min, 8);
+                } else {
+                    return (0, 9);
+                }
+            }
         }
     }
 
@@ -443,12 +463,12 @@ contract Slippage is  Synchron, IEventStruct {
 
     function validateRemoveTime(address token) external view returns(bool) {
         uint256 endtime = getEndTime(token);
-        (,,uint256 lastTime,) = coinData.getTokenInfo(token);
+        (,,uint256 lastTime,) = dataReader.getTokenInfo(token);
         if(endtime != 0) {
             require(
                 lastTime > endtime ||
                 block.timestamp < endtime, 
-                "has rmove  shelves"
+                "has rmove shelves"
             );
         }
         return true;
@@ -456,7 +476,7 @@ contract Slippage is  Synchron, IEventStruct {
 
     function validateCreate(address token) public view returns(bool) {
         (uint256 startTime, uint256 endtime) = getRemoveTime(token);
-        (,,uint256 lastTime,) = coinData.getTokenInfo(token);
+        (,,uint256 lastTime,) = dataReader.getTokenInfo(token);
         if(startTime != 0) {
             require(
                 lastTime > endtime ||
@@ -469,11 +489,13 @@ contract Slippage is  Synchron, IEventStruct {
     }
 
     function getEndTime(address token) public  view returns(uint256) {
+        token = dataReader.getIndexToken(token);
         uint256 rNum = removeNum[token];
         return removeShelves[token][rNum].endtime;
     }
 
     function getRemoveTime(address token) public view returns(uint256, uint256) {
+        token = dataReader.getIndexToken(token);
         uint256 rNum = removeNum[token];
         return (removeShelves[token][rNum].startTime, removeShelves[token][rNum].endtime);
     }
@@ -497,16 +519,16 @@ contract Slippage is  Synchron, IEventStruct {
         address token, 
         uint256 rNum
     ) public view returns(RemoveShelves memory) {
+        token = dataReader.getIndexToken(token);
         return removeShelves[token][rNum];
     }
-
 
     function getSizeData(address indexToken) public view returns(
         uint256 globalShortSizes,
         uint256 globalLongSizes,
         uint256 totalSize
     ) {
-        (globalShortSizes, globalLongSizes, totalSize) = coinData.getSizeData(indexToken);
+        (globalShortSizes, globalLongSizes, totalSize) = dataReader.getSizeData(indexToken);
     }
 
     function getIndexTokensLength() external view returns(uint256) {
@@ -666,8 +688,8 @@ contract Slippage is  Synchron, IEventStruct {
         return vault.getDelta(_indexToken, size, averagePrice, _isLong, lastIncreasedTime);
     }
 
-
     function getTokenMaxLeverage(address indexToken) public view returns(uint256) {
+        indexToken = dataReader.getIndexToken(indexToken);
         uint256 maxLeverage = tokenMaxLeverage[indexToken] == 0 ? vault.maxLeverage() : tokenMaxLeverage[indexToken];
 
         return maxLeverage;
@@ -841,10 +863,19 @@ contract Slippage is  Synchron, IEventStruct {
         uint256 thresholdValue
     );
     
+    /**
+     * @notice Set a custom threshold value for an index token
+     * @dev Only callable by governance. Threshold is stored per pool target token:
+     *      _belongTo == 2 (member token) → setTokenThresholdValue[pair][memberId]
+     *      _belongTo == 1 (single token) → singleTokenThresholdValue[pair][token]
+     *      Other classifications revert.
+     * @param _indexToken The token address (will be resolved via dataReader)
+     * @param _thresholdValue The threshold in basis points (0 < value <= baseRate = 10000)
+     */
     function setIndexTokenThresholdValue(address _indexToken, uint256 _thresholdValue) external onlyGov() {
         if(_thresholdValue > baseRate || _thresholdValue == 0) revert("_thresholdValue err");
 
-        (address _poolTargetToken, uint256 _memberTokenTargetID,,uint8 _belongTo) = coinData.getTokenInfo(_indexToken);
+        (address _poolTargetToken, uint256 _memberTokenTargetID,,uint8 _belongTo) = dataReader.getTokenInfo(_indexToken);
         if(_belongTo == 2) {
             setTokenThresholdValue[_poolTargetToken][_memberTokenTargetID] = _thresholdValue;
         } else if(_belongTo == 1) {
@@ -856,9 +887,123 @@ contract Slippage is  Synchron, IEventStruct {
         emit SetIndexTokenThresholdValue(_indexToken, _poolTargetToken, _memberTokenTargetID, _thresholdValue);
     }
 
+    /**
+     * @notice Get the effective threshold value for a token
+     * @dev Resolution order:
+     *      1. If token is a channel mapped token (indexToken != _indexToken):
+     *         a. Check custom threshold via dataReader → return if set
+     *         b. Fallback to _getThresholdValue with the same _belongTo
+     *      2. Otherwise, resolve via coinData.getTokenInfo and call _getThresholdValue
+     * @param _indexToken The token address (channel token or regular token)
+     * @return uint256 The resolved threshold value in basis points
+     */
     function getThresholdValue(address _indexToken) public view returns(uint256) {
-        (address _poolTargetToken, uint256 _memberTokenTargetID,,uint8 _belongTo) = coinData.getTokenInfo(_indexToken);
+        address indexToken = dataReader.getIndexToken(_indexToken);
 
+        (address _poolTargetToken, uint256 _memberTokenTargetID,,uint8 _belongTo) = coinData.getTokenInfo(indexToken);        
+        if(indexToken != _indexToken) {
+            address _poolToken = dataReader.getTargetIndexToken(_indexToken);
+            if(_belongTo == 2) {
+                uint256 _thresholdValue = setTokenThresholdValue[_poolToken][_memberTokenTargetID];
+                return _thresholdValue == 0 ? _getThresholdValue(indexToken, _poolTargetToken, _memberTokenTargetID, _belongTo) : _thresholdValue;
+            } else if(_belongTo == 1) {
+                uint256 _thresholdValue = singleTokenThresholdValue[_poolToken][_indexToken];
+                return _thresholdValue == 0 ? _getThresholdValue(indexToken, _poolTargetToken, _memberTokenTargetID, _belongTo) : _thresholdValue;
+            }
+        }
+
+        return _getThresholdValue(indexToken, _poolTargetToken, _memberTokenTargetID, _belongTo);
+    }
+
+    // ************************************Channel mode***********************************************
+
+    /// @notice Custom factor per channel target token; overrides the global `factor` when set
+    mapping(address => uint256) public channelFactor;
+
+    /// @notice Emitted when a channel pool's slippage factor is set
+    /// @param indexToken The channel pool token address
+    /// @param targetToken The underlying target token address
+    /// @param factor The new slippage factor value
+    event SetChannelFactor(address indexToken, address targetToken, uint256 factor);
+
+    /// @notice Emitted when an expired channel pool position is automatically closed
+    /// @param pool Channel pool address
+    /// @param account Position owner
+    /// @param collateralToken Collateral token
+    /// @param indexToken Index token (channel-mapped)
+    /// @param isLong True for long, false for short
+    /// @param amount Account received amount
+    event ChannelAutoDecreasePosition(
+        address pool,
+        address account,
+        address collateralToken,
+        address indexToken,
+        bool isLong,
+        uint256 amount
+    );
+
+    /// @notice Emitted when a pool owner force-closes a profitable position
+    /// @param pool Channel pool address
+    /// @param account Position owner
+    /// @param collateralToken Collateral token
+    /// @param indexToken Index token (channel-mapped)
+    /// @param isLong True for long, false for short
+    /// @param amount Account received amount
+    event ChannelPoolDecreasePosition(
+        address pool,
+        address account,
+        address collateralToken,
+        address indexToken,
+        bool isLong,
+        uint256 amount
+    );
+
+    /**
+     * @notice Set a custom slippage factor for a channel pool's target token
+     * @dev Only callable by governance. The factor is stored against the resolved target token,
+     *      not the channel token itself, so it works uniformly across all pools sharing the same target.
+     * @param _indexToken A channel token belonging to the target pool
+     * @param _factor The new factor value (must be > 0 and <= baseRate = 10000)
+     */
+    function setChannelFactor(address _indexToken, uint256 _factor) external onlyGov {
+        address pool = memeFactory().channelMappedTokenPool(_indexToken);
+        require(pool != address(0), "pool err");
+        require(_factor > 0 && _factor <= baseRate, "factor_ err");
+
+        address _targetToken = memeFactory().channelMappedTargetToken(pool);
+        channelFactor[_targetToken] = _factor;
+        
+        emit SetChannelFactor(_indexToken, _targetToken, _factor);
+    }
+
+    /**
+     * @notice Get the effective slippage factor for a token
+     * @dev Returns the custom channel factor if set, otherwise falls back to the global `factor`
+     * @param _indexToken The token address (channel token or regular token)
+     * @return uint256 The effective factor value
+     */
+    function getFactor(address _indexToken) public view returns(uint256) {
+        uint256 _factor = channelFactor[_indexToken];
+        if(_factor > 0) {
+            return _factor;
+        }
+        return factor;
+    }
+
+    /**
+     * @notice Resolve the threshold value for a given token based on its classification
+     * @dev Fallback chain (category → check custom → default):
+     *      1. _belongTo == 2 (member token): setTokenThresholdValue[pool][memberID] → threshold
+     *      2. _belongTo == 1 (single token): singleTokenThresholdValue[pool][token] → threshold
+     *      3. _belongTo == 0 (legacy token): always returns global threshold
+     *      4. Other: returns 0 (unregistered token)
+     * @param _indexToken The token to query (resolved beforehand)
+     * @param _poolTargetToken The pool's target token address
+     * @param _memberTokenTargetID The member token target ID (for _belongTo == 2)
+     * @param _belongTo Token classification: 0=legacy, 1=single, 2=member
+     * @return uint256 The resolved threshold value in basis points
+     */
+    function _getThresholdValue(address _indexToken, address _poolTargetToken, uint256 _memberTokenTargetID, uint8 _belongTo) internal view returns(uint256) {
         if(_belongTo == 2) {
             uint256 _setTokenThresholdValue = setTokenThresholdValue[_poolTargetToken][_memberTokenTargetID];
             return _setTokenThresholdValue == 0 ? threshold : _setTokenThresholdValue;
@@ -871,4 +1016,84 @@ contract Slippage is  Synchron, IEventStruct {
             return 0;
         }
     }
+
+    /**
+     * @notice Batch auto-close positions in channel pools past their close endTime
+     * @dev Iterates over positions, skips if:
+     *      - Position size == 0 (no position to close)
+     *      - Token not channel-mapped (pool == address(0))
+     *      - Close endTime not set (endTime == 0) or still in future (endTime > now)
+     *      Calls vault.autoDecreasePosition for each valid position.
+     *      No authorization required — anyone can trigger cleanup of expired pools.
+     * @param autoData Array of AutoStruct (account, collateralToken, indexToken, isLong)
+     */
+    function batchChannelAutoDecreasePosition(
+        AutoStruct[] memory autoData
+    ) external {
+        validate();
+        uint256 len = autoData.length;
+        require(len > 0, "length err");
+        
+        for(uint256 i = 0; i < len; i++) {
+            AutoStruct memory aData = autoData[i];
+            address _indexToken = aData.indexToken;
+            address pool = memeFactory().channelMappedTokenPool(_indexToken);
+            (, , uint256 endTime) = memeFactory().channelPoolCloseInfo(pool);
+            bytes32 key = vault.getPositionKey(aData.account, aData.collateralToken, aData.indexToken, aData.isLong);
+            Position memory pos = vault.getPositionFrom(key);
+            if(pos.size == 0 || pool == address(0) || endTime > block.timestamp || endTime == 0) {
+                continue;
+            }
+            uint256 amount = vault.autoDecreasePosition(aData.account, aData.collateralToken, aData.indexToken, aData.isLong);
+            if(amount > 0) {
+                IERC20(aData.collateralToken).safeTransfer(aData.account, amount);
+            }
+
+            emit ChannelAutoDecreasePosition(pool, aData.account, aData.collateralToken, aData.indexToken, aData.isLong, amount);
+        }
+    }
+
+    /**
+     * @notice Force-close a profitable position in the caller's own channel pool
+     * @dev Conditions:
+     *      1. Caller must own a channel pool (channelOwnerPool[msg.sender])
+     *      2. Index token's resolved target must match pool's channelPoolToken
+     *      3. Position must exist (pos.size > 0)
+     *      4. Position must be in profit (hasProfit == true)
+     *      Calls vault.autoDecreasePosition to close at current market price.
+     *      This allows pool owners to forcibly close profitable positions, reducing risk exposure.
+     * @param _account Position owner address
+     * @param _collateralToken Collateral token (USDT)
+     * @param _indexToken Index token (channel-mapped)
+     * @param _isLong True for long, false for short
+     */
+    function channelPoolDecreasePosition(
+        address _account, 
+        address _collateralToken, 
+        address _indexToken, 
+        bool _isLong
+    ) external {
+        address pool = memeFactory().channelOwnerPool(msg.sender);
+        if(pool == address(0)) revert("pool err");
+        address channelPoolToken = memeFactory().channelPoolToken(pool);      
+        address targetIndexToken = dataReader.getTargetIndexToken(_indexToken);
+        if(channelPoolToken != targetIndexToken) revert("channelPoolToken err");
+
+        bytes32 key = vault.getPositionKey(_account, _collateralToken, _indexToken, _isLong);
+        Position memory pos = vault.getPositionFrom(key);
+        (bool hasProfit,) = vault.getDelta(_indexToken, pos.size, pos.averagePrice, _isLong, pos.lastIncreasedTime);
+        if(!hasProfit) revert("profit err");
+
+        uint256 amount = vault.autoDecreasePosition(_account, _collateralToken, _indexToken, _isLong);
+        if(amount > 0) {
+            IERC20(_collateralToken).safeTransfer(_account, amount);  
+        }
+
+        emit ChannelPoolDecreasePosition(pool, _account, _collateralToken, _indexToken, _isLong, amount);
+    }
+
+    function memeFactory() public view returns(IMemeFactory) {
+        return IMemeFactory(dataReader.memeFactory());
+    }
+
 }  
