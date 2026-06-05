@@ -264,6 +264,10 @@ contract MemeData is Synchron, IMemeStruct {
     // ************************************Channel mode***********************************************
     /// @notice Channel user deposit/GLP tracking by (pool, user, setID)
     mapping(address => mapping(address => mapping(uint256 => MemeUserInfo))) public channelUserInfo;
+    /// @notice Total USDT deposited per channel pool per setID: pool => setID => amount
+    mapping(address => mapping(uint256 => uint256)) public channelPoolDepositAmount;
+    /// @notice Total USDT unstaked per channel pool per setID: pool => setID => amount
+    mapping(address => mapping(uint256 => uint256)) public channelPoolUnStakeAmount;
     
     /// @notice Emitted when a channel user deposits USDT and mints GLP
     event AddLiquidity(
@@ -299,7 +303,7 @@ contract MemeData is Synchron, IMemeStruct {
      *      Once freezeTime has passed, deposits are permanently blocked for this pool.
      *      Execution:
      *      1. Get current set ID for the pool
-     *      2. Increment user's depositAmount in channelUserInfo
+     *      2. Increment user's depositAmount in channelUserInfo + channelPoolDepositAmount
      *      3. Mint GLP via _mintAndStakeGlp (USDT → GLP)
      *      4. Add glpAmount to user's channelUserInfo
      * @param user Depositor address
@@ -313,6 +317,7 @@ contract MemeData is Synchron, IMemeStruct {
  
         uint256 cID = memeFactory.channelPoolSetID(pool);
         channelUserInfo[pool][user][cID].depositAmount += amount;
+        channelPoolDepositAmount[pool][cID] += amount;
         uint256 glpAmount = _mintAndStakeGlp(pool, user, memeFactory.channelPoolToken(pool), usdt, amount);
 
         channelUserInfo[pool][user][cID].glpAmount += glpAmount;
@@ -406,25 +411,31 @@ contract MemeData is Synchron, IMemeStruct {
 
     /**
      * @notice Burn GLP and withdraw USDT from a channel pool
-     * @dev Execution order:
+     * @dev Block-scoped to avoid stack-too-deep. Execution order:
      *      1. Validate: amount > 0, receiver != address(0)
-     *      2. Calculate via getChannelOutAmount → outAmount (USDT), burnGlpAmount (GLP)
-     *         - Full withdrawal: all positions closed + past close time → entire pool
-     *         - Partial withdrawal: capped by perWithdrawRate and time window checks
-     *      3. Slippage: subGlpAmount → decrease GLP supply tracking
-     *      4. Approve + burn: pool approves GLP, then burn(pool, burnGlpAmount)
-     *      5. Transfer: vault.transferOut → USDT from Vault to receiver
-     *      6. Update user state: channelUserInfo.glpAmount -= burnGlpAmount,
-     *                              channelUserInfo.unStakeAmount += outAmount
-     *      7. Emit RemoveLiquidity event
+     *      2. getChannelOutAmount → initial outAmount, burnGlpAmount, totalOutAmount
+     *      3. Block 1 — cID & user state:
+     *         - channelPoolSetID → cID
+     *         - Cap burnGlpAmount to userGlp
+     *         - Deduct glpAmount, add unStakeAmount in channelUserInfo
+     *         - Accumulate channelPoolUnStakeAmount per pool per setID
+     *      4. Block 2 — price-adjusted outAmount:
+     *         - channelPoolToken → targetToken
+     *         - Recalculate outAmount = totalOutAmount * burnGlpAmount / totalGlpSupply
+     *      5. Slippage.subGlpAmount + vault.transferOut (no locals dropped yet)
+     *      6. Block 3 — burn & event:
+     *         - glpTokenSupply → totalSupply, GLP() → glp
+     *         - pool.approve + IMintable(glp).burn
+     *         - Emit RemoveLiquidity
+     *      7. Return (outAmount, burnGlpAmount)
      * @param user Claimer address (state update target)
      * @param pool Channel pool address (GLP holder)
-     * @param indexToken Index token for getChannelOutAmount lookup
-     * @param tokenOut Output token (must be USDT)
-     * @param amount Requested withdrawal (USDT)
+     * @param indexToken Index token for amount lookups
+     * @param tokenOut Output token (USDT)
+     * @param amount Requested withdrawal (GLP)
      * @param receiver USDT recipient address
-     * @return outAmount USDT actually withdrawn (after caps)
-     * @return burnGlpAmount GLP tokens burned
+     * @return outAmount USDT withdrawn
+     * @return burnGlpAmount GLP burned
      */
     function _unstakeAndRedeemGlp(
         address user,
@@ -436,21 +447,33 @@ contract MemeData is Synchron, IMemeStruct {
     ) internal returns (uint256, uint256) {
         if(amount == 0 || receiver == address(0)) revert("claim err");
 
-        (uint256 outAmount, uint256 burnGlpAmount,,) = getChannelOutAmount(indexToken, tokenOut, amount);
+        (uint256 outAmount, uint256 burnGlpAmount, uint256 totalOutAmount,) = getChannelOutAmount(indexToken, tokenOut, amount);
         if(outAmount == 0) revert("outAmount err");
+        uint256 cID;
+        {
+            cID = memeFactory.channelPoolSetID(pool);
+            uint256 userGlp = channelUserInfo[pool][user][cID].glpAmount;
+            burnGlpAmount = amount > userGlp ? userGlp : amount;
+            channelUserInfo[pool][user][cID].glpAmount -= burnGlpAmount;
+            channelUserInfo[pool][user][cID].unStakeAmount += outAmount;
+            channelPoolUnStakeAmount[pool][cID] += outAmount;
+        }
+        {
+            address targetToken = memeFactory.channelPoolToken(pool);
+            uint256 totalGlpSupply = ISlippage(vault.slippage()).glpTokenSupply(targetToken, tokenOut);
+            outAmount = totalOutAmount * burnGlpAmount / totalGlpSupply;
+        }
+
         slippage().subGlpAmount(indexToken, tokenOut, burnGlpAmount);
-        uint256 totalSupply = slippage().glpTokenSupply(indexToken, tokenOut);
-        address glp = GLP();
-        IChannelPool(pool).approve(address(this), glp, burnGlpAmount);
-        IMintable(glp).burn(pool, burnGlpAmount);
         vault.transferOut(indexToken, tokenOut, receiver, outAmount);
 
-        uint256 cID = memeFactory.channelPoolSetID(pool);
-        channelUserInfo[pool][user][cID].glpAmount -= burnGlpAmount;
-        channelUserInfo[pool][user][cID].unStakeAmount += outAmount;
-
-        emit RemoveLiquidity(user, pool, address(vault), receiver, tokenOut, amount, outAmount, burnGlpAmount, totalSupply);
-        
+        {
+            uint256 totalSupply = slippage().glpTokenSupply(indexToken, tokenOut);
+            address glp = GLP();
+            IChannelPool(pool).approve(address(this), glp, burnGlpAmount);
+            IMintable(glp).burn(pool, burnGlpAmount);
+            emit RemoveLiquidity(user, pool, address(vault), receiver, tokenOut, amount, outAmount, burnGlpAmount, totalSupply);
+        }
         return (outAmount, burnGlpAmount);
     }
 

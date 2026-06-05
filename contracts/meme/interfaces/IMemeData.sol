@@ -70,4 +70,8 @@ interface IMemeData is IMemeStruct {
     function channelUserInfo(address pool, address user, uint256 index) external view returns(uint256 depositAmount, uint256 glpAmount, uint256 unStakeAmount);
 
     function getChannelOutAmount(address indexToken, address tokenOut, uint256 amount) external view returns(uint256 outAmount, uint256 burnGlpAmount, uint256 totalOutAmount, uint256 riskBuffer);
+
+    function channelPoolDepositAmount(address pool, uint256 setId) external view returns(uint256);
+    
+    function channelPoolUnStakeAmount(address pool, uint256 setId) external view returns(uint256);
 }

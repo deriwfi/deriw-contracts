@@ -602,12 +602,13 @@ contract DataReader is Synchron {
 
     /**
      * @notice Get the usable pool amount for a given index/collateral token pair
-     * @dev For channel pools in principal mode (mode == 1), returns the lesser of the
-     *      current pool amount and the total user deposit amount, preventing usage of
-     *      unrealized PnL beyond principal. Non-channel pools always return the full pool amount.
+     * @dev For channel pools in principal mode (mode == 1), caps the pool amount at the
+     *      aggregated channelPoolDepositAmount (total USDT deposited across all users),
+     *      preventing usage of unrealized PnL beyond principal. Non-channel pools and
+     *      non-principal mode always return the full Vault pool amount.
      * @param _indexToken The index token address
      * @param _collateralToken The collateral token address
-     * @return uint256 The usable pool amount
+     * @return uint256 The usable pool amount (capped for principal mode)
      */
     function getUsePoolAmounts(address _indexToken, address _collateralToken) public view returns(uint256) {
         address pool = memeFactory.channelMappedTokenPool(_indexToken);
@@ -616,13 +617,12 @@ contract DataReader is Synchron {
             uint256 mode = memeFactory.channelPoolMode(pool);
             if(mode == 1) {
                 uint256 id = memeFactory.channelPoolSetID(pool);
-                (uint256 depositAmount,, ) = memeData.channelUserInfo(pool, memeFactory.channelPoolOwner(pool), id);
+                uint256 depositAmount = memeData.channelPoolDepositAmount(pool, id);
                 return depositAmount > currAmounts ? currAmounts : depositAmount;
             }
         }
         return currAmounts;
     }
-
 
     /**
      * @notice Calculate channel withdrawal amount with per-withdraw rate and window capping

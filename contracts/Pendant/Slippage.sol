@@ -978,14 +978,19 @@ contract Slippage is  Synchron, IEventStruct {
 
     /**
      * @notice Get the effective slippage factor for a token
-     * @dev Returns the custom channel factor if set, otherwise falls back to the global `factor`
+     * @dev Lookup chain: _indexToken → pool → targetToken → channelFactor[targetToken].
+     *      If _indexToken belongs to a channel pool and that pool's target token
+     *      has a custom channelFactor set (> 0), use it; otherwise fall back to
+     *      the global `factor`.
      * @param _indexToken The token address (channel token or regular token)
      * @return uint256 The effective factor value
      */
-    function getFactor(address _indexToken) public view returns(uint256) {
-        uint256 _factor = channelFactor[_indexToken];
-        if(_factor > 0) {
-            return _factor;
+    function getFactor(address _indexToken) public view returns(uint256) { 
+        address pool = memeFactory().channelMappedTokenPool(_indexToken);
+        if (pool != address(0)) {
+            address targetToken = memeFactory().channelMappedTargetToken(pool);
+            uint256 f = channelFactor[targetToken];
+            if (f > 0) return f;
         }
         return factor;
     }
@@ -1018,14 +1023,14 @@ contract Slippage is  Synchron, IEventStruct {
     }
 
     /**
-     * @notice Batch auto-close positions in channel pools past their close endTime
-     * @dev Iterates over positions, skips if:
-     *      - Position size == 0 (no position to close)
-     *      - Token not channel-mapped (pool == address(0))
-     *      - Close endTime not set (endTime == 0) or still in future (endTime > now)
-     *      Calls vault.autoDecreasePosition for each valid position.
-     *      No authorization required — anyone can trigger cleanup of expired pools.
-     * @param autoData Array of AutoStruct (account, collateralToken, indexToken, isLong)
+     * @notice Batch auto-decrease positions for expired channel pools
+     * @dev Iterates over autoData array. For each entry:
+     *      1. Resolve pool via channelMappedTokenPool(indexToken)
+     *      2. Skip if: pos.size == 0, pool invalid, endTime not yet passed, or endTime == 0
+     *      3. Otherwise: vault.autoDecreasePosition → close the position
+     *      4. If amount > 0: transfer collateral back to account
+     *      5. Emit ChannelAutoDecreasePosition per processed entry
+     * @param autoData Array of AutoStruct with account, collateralToken, indexToken, isLong
      */
     function batchChannelAutoDecreasePosition(
         AutoStruct[] memory autoData

@@ -403,6 +403,7 @@ contract MemeFactory is Synchron, ReentrancyGuard {
      * @param isOperator Whether to grant operator role
      */
     function setChannelOperator(address account, bool isOperator) external onlyGov {
+        if(account == address(0)) revert("account err");
         channelOperator[account] = isOperator;
 
         emit SetChannelOperator(account, isOperator);
@@ -414,6 +415,7 @@ contract MemeFactory is Synchron, ReentrancyGuard {
      * @param isAdd Whether to grant creator permission
      */
     function setChannelTokenCreator(address account, bool isAdd) external onlyGov {
+        if(account == address(0)) revert("account err");
         channelTokenCreator[account] = isAdd;
 
         emit SetChannelTokenCreator(account, isAdd);
@@ -604,25 +606,21 @@ contract MemeFactory is Synchron, ReentrancyGuard {
     /**
      * @notice Create or resolve a channel-mapped token for trading
      * @dev Called by OrderBook/PositionRouter during order creation.
-     *      Resolution logic:
-     *      1. Only channelTokenCreator callers (OrderBook/PositionRouter)
-     *      2. If indexToken is not coinType=1 → return as-is (not a tradable coin)
+     *      Resolution logic (returns early on any fallback condition):
+     *      1. Only channelTokenCreator callers (OrderBook/PositionRouter) → "cannot create"
+     *      2. If indexToken coinType != 1 → return indexToken (pair token, trade on main pool)
      *      3. Look up user's referrer → find referrer's channel pool
-     *      4. If referrer has no pool OR token already mapped → return original indexToken (trade on main pool)
-     *      5. If indexToken has no maxPrice → revert (unregistered token)
-     *      6. Otherwise → _createChannelToken: deploy PlaceholderToken, set cross-mappings
-     *         (token is always created here; subsequent calls skip via step 4 mapping check)
-     *      7. If user is blacklisted from the pool → return original indexToken (forced to main pool)
-     *      8. Check channel pool available value via getValue(user, _indexToken, isLong):
-     *         - If min >= sizeDelta → return channel token (trade on channel pool)
-     *         - If min < sizeDelta  → return original indexToken (fall back to main pool)
-     *      After first creation, subsequent calls for same (token, pool) return original indexToken,
-     *      enabling users to choose between main pool and channel pool for the same asset.
+     *      4. If no pool / already mapped / user blacklisted → return indexToken (main pool)
+     *      5. If indexToken has no maxPrice → revert "create err"
+     *      6. _createChannelToken: deploy PlaceholderToken + set cross-mappings
+     *      7. Check channel pool available value via getValue(user, _indexToken, isLong):
+     *         - min >= sizeDelta → return _indexToken (trade on channel pool)
+     *         - min < sizeDelta  → return indexToken (fall back to main pool)
      * @param user Trader address (used to look up referral)
      * @param indexToken The index token to trade (e.g., BTC)
-     * @param sizeDelta Position size delta (USD, 30 decimals), compared against channel pool available value
-     * @param isLong Whether the position is long (true) or short (false), used for value direction calculation
-     * @return Resolved token: original indexToken or new channel placeholder
+     * @param sizeDelta Position size delta (USD, 30 decimals)
+     * @param isLong Whether the position is long (true) or short (false)
+     * @return Resolved token: channel token or original indexToken
      */
     function createChannelToken(address user, address indexToken, uint256 sizeDelta, bool isLong) external returns(address) {
         if(!channelTokenCreator[msg.sender]) revert("cannot create");
@@ -634,17 +632,12 @@ contract MemeFactory is Synchron, ReentrancyGuard {
         IReferralStorage referralStorage = IReferralStorage(IDataReader(vault().dataReader()).referralStorage());
         address ref = referralStorage.referral(user);
         address pool = channelOwnerPool[ref];
-        if(pool == address(0) || indexTokenChannelMapped[indexToken][pool] != address(0)) {
+        if(pool == address(0) || indexTokenChannelMapped[indexToken][pool] != address(0) || blacklist[pool][user]) {
             return indexToken;
         }
         if(vault().getMaxPrice(indexToken) == 0) revert("create err");
 
         address _indexToken = _createChannelToken(pool, indexToken, IERC20Metadata(indexToken).name(), IERC20Metadata(indexToken).symbol());
-        // Blacklist check: must be placed after _createChannelToken so that the channel token
-        // is registered (mapping set) for other users; blacklisted users are forced to main pool
-        if(blacklist[pool][user]) {
-            return indexToken;
-        }
         (uint256 min,) = IPhase(vault().phase()).getValue(user, _indexToken, isLong);
         return min >= sizeDelta ? _indexToken : indexToken;
     }
