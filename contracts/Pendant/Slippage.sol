@@ -1086,6 +1086,7 @@ contract Slippage is  Synchron, IEventStruct {
 
         bytes32 key = vault.getPositionKey(_account, _collateralToken, _indexToken, _isLong);
         Position memory pos = vault.getPositionFrom(key);
+        if (pos.size == 0) revert("position err");
         (bool hasProfit,) = vault.getDelta(_indexToken, pos.size, pos.averagePrice, _isLong, pos.lastIncreasedTime);
         if(!hasProfit) revert("profit err");
 
@@ -1100,5 +1101,4 @@ contract Slippage is  Synchron, IEventStruct {
     function memeFactory() public view returns(IMemeFactory) {
         return IMemeFactory(dataReader.memeFactory());
     }
-
 }  

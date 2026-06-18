@@ -298,6 +298,7 @@ contract MemeData is Synchron, IMemeStruct {
      * @dev Only callable by MemeFactory.
      *      Reverts if:
      *      - Caller is not MemeFactory ("No permission")
+     *      - amount < 10 USDT ("min err"), Minimum deposit: 10 USDT (10 * 10^6 = 10,000,000 raw units)
      *      - Pool address is zero, pool is closed, or pool is paused ("cannot deposit")
      *      - Pool has entered freeze period (freezeTime set AND freezeTime <= now) ("cannot deposit")
      *      Once freezeTime has passed, deposits are permanently blocked for this pool.
@@ -312,6 +313,7 @@ contract MemeData is Synchron, IMemeStruct {
      */
     function depositChannel(address user, address pool, uint256 amount) external {
         if(msg.sender != address(memeFactory)) revert("No permission");
+        if(amount < 10 * getTokenDecimals(usdt)) revert("min err");
         (,uint256 freezeTime,) = memeFactory.channelPoolCloseInfo(pool);
         if(pool == address(0) || memeFactory.channelPoolIsClose(pool) || memeFactory.channelPoolIsPause(pool) || (freezeTime != 0 && freezeTime <= block.timestamp)) revert("cannot deposit");
  
@@ -356,12 +358,11 @@ contract MemeData is Synchron, IMemeStruct {
         if(pool == address(0) || memeFactory.channelPoolIsClose(pool) || memeFactory.channelPoolIsPause(pool)) revert("cannot claim");
 
         (,uint256 freezeTime, uint256 endTime) = memeFactory.channelPoolCloseInfo(pool);
-        if(freezeTime != 0 && freezeTime < block.timestamp) {
+        if(freezeTime != 0 && freezeTime <= block.timestamp) {
             if(endTime > block.timestamp) {
                 revert("time err");
             } else {
-                IADL adl = IADL(IReferralData(vault.referralData()).adlContract());
-                (uint256 longSize, uint256 shortSize) = adl.getGlobalLongAndShortSizes(memeFactory.channelPoolToken(pool));
+                (uint256 longSize, uint256 shortSize) = getGlobalLongAndShortSizes(memeFactory.channelPoolToken(pool));
                 if(longSize != 0 || shortSize != 0) revert("size err");
             }
         }
@@ -410,32 +411,27 @@ contract MemeData is Synchron, IMemeStruct {
     }
 
     /**
-     * @notice Burn GLP and withdraw USDT from a channel pool
-     * @dev Block-scoped to avoid stack-too-deep. Execution order:
+     * @notice Burn GLP and withdraw USDT from a channel pool (multi-user compatible)
+     * @dev Execution order:
      *      1. Validate: amount > 0, receiver != address(0)
-     *      2. getChannelOutAmount → initial outAmount, burnGlpAmount, totalOutAmount
-     *      3. Block 1 — cID & user state:
-     *         - channelPoolSetID → cID
-     *         - Cap burnGlpAmount to userGlp
-     *         - Deduct glpAmount, add unStakeAmount in channelUserInfo
-     *         - Accumulate channelPoolUnStakeAmount per pool per setID
-     *      4. Block 2 — price-adjusted outAmount:
-     *         - channelPoolToken → targetToken
-     *         - Recalculate outAmount = totalOutAmount * burnGlpAmount / totalGlpSupply
-     *      5. Slippage.subGlpAmount + vault.transferOut (no locals dropped yet)
-     *      6. Block 3 — burn & event:
-     *         - glpTokenSupply → totalSupply, GLP() → glp
-     *         - pool.approve + IMintable(glp).burn
-     *         - Emit RemoveLiquidity
-     *      7. Return (outAmount, burnGlpAmount)
+     *      2. getChannelOutAmount → (outAmount, burnGlpAmount) based on pool limits
+     *      3. Load user's actual GLP balance and cap burnGlpAmount:
+     *         - _burnGlpAmount = min(burnGlpAmount, userGlp)
+     *         - outAmount = outAmount * _burnGlpAmount / burnGlpAmount (proportional)
+     *      4. Update state:
+     *         - channelUserInfo.glpAmount -= burnGlpAmount
+     *         - channelUserInfo.unStakeAmount += outAmount
+     *         - channelPoolUnStakeAmount += outAmount
+     *      5. Slippage.subGlpAmount + vault.transferOut
+     *      6. Burn GLP (pool.approve + IMintable(glp).burn) + emit RemoveLiquidity
      * @param user Claimer address (state update target)
      * @param pool Channel pool address (GLP holder)
      * @param indexToken Index token for amount lookups
      * @param tokenOut Output token (USDT)
-     * @param amount Requested withdrawal (GLP)
+     * @param amount Requested withdrawal amount (may exceed user's actual GLP; capped automatically)
      * @param receiver USDT recipient address
-     * @return outAmount USDT withdrawn
-     * @return burnGlpAmount GLP burned
+     * @return outAmount USDT withdrawn (proportional to user's GLP share)
+     * @return burnGlpAmount GLP burned (capped to user's actual GLP)
      */
     function _unstakeAndRedeemGlp(
         address user,
@@ -447,27 +443,22 @@ contract MemeData is Synchron, IMemeStruct {
     ) internal returns (uint256, uint256) {
         if(amount == 0 || receiver == address(0)) revert("claim err");
 
-        (uint256 outAmount, uint256 burnGlpAmount, uint256 totalOutAmount,) = getChannelOutAmount(indexToken, tokenOut, amount);
-        if(outAmount == 0) revert("outAmount err");
-        uint256 cID;
+        (uint256 outAmount, uint256 burnGlpAmount,,) = getChannelOutAmount(indexToken, tokenOut, amount);
         {
-            cID = memeFactory.channelPoolSetID(pool);
+            uint256 cID = memeFactory.channelPoolSetID(pool);
             uint256 userGlp = channelUserInfo[pool][user][cID].glpAmount;
-            burnGlpAmount = amount > userGlp ? userGlp : amount;
+            uint256 _burnGlpAmount = burnGlpAmount > userGlp ? userGlp : burnGlpAmount;
+            outAmount = outAmount * _burnGlpAmount / burnGlpAmount;
+            if(outAmount == 0) revert("outAmount err");
+            burnGlpAmount = _burnGlpAmount;
             channelUserInfo[pool][user][cID].glpAmount -= burnGlpAmount;
             channelUserInfo[pool][user][cID].unStakeAmount += outAmount;
             channelPoolUnStakeAmount[pool][cID] += outAmount;
         }
-        {
-            address targetToken = memeFactory.channelPoolToken(pool);
-            uint256 totalGlpSupply = ISlippage(vault.slippage()).glpTokenSupply(targetToken, tokenOut);
-            outAmount = totalOutAmount * burnGlpAmount / totalGlpSupply;
-        }
-
-        slippage().subGlpAmount(indexToken, tokenOut, burnGlpAmount);
-        vault.transferOut(indexToken, tokenOut, receiver, outAmount);
 
         {
+            slippage().subGlpAmount(indexToken, tokenOut, burnGlpAmount);
+            vault.transferOut(indexToken, tokenOut, receiver, outAmount);
             uint256 totalSupply = slippage().glpTokenSupply(indexToken, tokenOut);
             address glp = GLP();
             IChannelPool(pool).approve(address(this), glp, burnGlpAmount);
@@ -560,8 +551,7 @@ contract MemeData is Synchron, IMemeStruct {
         {
             uint256 totalGlpSupply = ISlippage(vault.slippage()).glpTokenSupply(targetToken, tokenOut);
             totalOutAmount = IPhase(vault.phase()).getOutAmount(targetToken, tokenOut, totalGlpSupply);
-            IADL adl = IADL(IReferralData(vault.referralData()).adlContract());
-            (uint256 longSize, uint256 shortSize) = adl.getGlobalLongAndShortSizes(targetToken);
+            (uint256 longSize, uint256 shortSize) = getGlobalLongAndShortSizes(targetToken);
             (,, uint256 endTime) = memeFactory.channelPoolCloseInfo(pool);
             if(longSize == 0 && shortSize == 0 && endTime > 0 && block.timestamp > endTime) {
                 outAmount = totalOutAmount;
@@ -571,4 +561,49 @@ contract MemeData is Synchron, IMemeStruct {
             }
         }
     }
+
+    /**
+     * @notice Query ADL for global long/short position sizes of a token
+     * @dev Convenience wrapper around ADL.getGlobalLongAndShortSizes.
+     *      Used by validateChanneTime to check if positions still exist.
+     * @param _indexToken Token address
+     * @return longSize Total long position size
+     * @return shortSize Total short position size
+     */
+    function getGlobalLongAndShortSizes(address _indexToken) public view returns(uint256, uint256) {
+        IADL adl = IADL(IReferralData(vault.referralData()).adlContract());
+        return adl.getGlobalLongAndShortSizes(_indexToken);
+    }
+
+    /**
+     * @notice Validate and calculate close time for a channel pool
+     * @dev Two branches:
+     *      - poolEndTime == 0: create new window (currTime → +freeze → +interval)
+     *      - poolEndTime != 0: attempt to advance endTime to currTime
+     *        Reverts "set err" if not in freeze window or positions still open.
+     *      Only callable by MemeFactory.
+     * @param pool Channel pool address
+     * @param currTime Reference timestamp
+     * @return poolStartTime  Calculated or existing startTime
+     * @return poolFreezeTime Calculated or existing freezeTime
+     * @return poolEndTime   Calculated or advanced endTime
+     */
+    function validateChanneTime(address pool, uint256 currTime) external view returns(uint256 poolStartTime, uint256 poolFreezeTime, uint256 poolEndTime) {
+        if(msg.sender != address(memeFactory)) revert("No permission");
+        (,,,uint256 channelFreezeTime, uint256 channelIntervalTime,) = memeFactory.channelSettings();
+        if(channelFreezeTime == 0 || memeFactory.channelPoolIsClose(pool) || pool == address(0)) revert("cannot set");
+        (poolStartTime, poolFreezeTime, poolEndTime) = memeFactory.channelPoolCloseInfo(pool);
+        if(poolEndTime == 0) {
+            poolStartTime = currTime;
+            poolFreezeTime = poolStartTime + channelFreezeTime;
+            poolEndTime = poolFreezeTime + channelIntervalTime;
+        } else {
+            (uint256 longSize, uint256 shortSize) = getGlobalLongAndShortSizes(memeFactory.channelPoolToken(pool));
+            if(poolFreezeTime < currTime && currTime < poolEndTime && longSize == 0 && shortSize == 0) {
+                poolEndTime = currTime;
+            } else {
+                revert("set err");
+            }
+        }
+    }        
 }

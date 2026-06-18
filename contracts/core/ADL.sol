@@ -360,7 +360,8 @@ contract ADL is Synchron {
      * @return size The new global long size
      */
     function increaseGlobalLongSize(address _indexToken, uint256 _amount) external onlyVault returns(uint256 size) {
-        uint256 maxSize = vault.maxGlobalLongSizes(_indexToken);
+        address indexToken = dataReader.getIndexToken(_indexToken);
+        uint256 maxSize = vault.maxGlobalLongSizes(indexToken);
         size = vault.globalLongSizes(_indexToken) + _amount;
         if (maxSize != 0) {
             require(size <= maxSize, "long err");
@@ -383,7 +384,6 @@ contract ADL is Synchron {
             _globalLongSize = size - _amount;
             _totalGlobalLongSizes[_indexToken] -= _amount;
         } else {
-            
             _totalGlobalLongSizes[_indexToken] -= size;
         }
     }
@@ -396,7 +396,8 @@ contract ADL is Synchron {
      */
     function increaseGlobalShortSize(address _indexToken, uint256 _amount) external onlyVault returns(uint256 size) {
         size = vault.globalShortSizes(_indexToken) + _amount;
-        uint256 maxSize = vault.maxGlobalShortSizes(_indexToken);
+        address indexToken = dataReader.getIndexToken(_indexToken);
+        uint256 maxSize = vault.maxGlobalShortSizes(indexToken);
         if (maxSize != 0) {
             require(size <= maxSize, "short");
         }

@@ -15,7 +15,7 @@ import "../access/Governable.sol";
  * @title Reader
  * @notice Unified read layer aggregating data from Vault, VaultPriceFeed, FastPriceFeed, and PriceFeed
  * @dev All price/state queries first resolve tokens via dataReader.getIndexToken() for channel support.
- *      Inherits Governable for owner-only admin functions (setContract, setAdjustment, etc.).
+ *      Inherits Governable for owner-only admin functions (setContract).
  */
 contract Reader is Governable {
     /// @notice Number of properties per position in getPositions return array
@@ -220,6 +220,18 @@ contract Reader is Governable {
         return vault.isFrom(token);
     }
 
+    /// @notice Get max global short size (resolved via getIndexToken)
+    function maxGlobalShortSizes(address token) external view returns(uint256) {
+        token = dataReader.getIndexToken(token);
+        return vault.maxGlobalShortSizes(token);
+    }
+
+    /// @notice Get max global long size (resolved via getIndexToken)
+    function maxGlobalLongSizes(address token) external view returns(uint256) {
+        token = dataReader.getIndexToken(token);
+        return vault.maxGlobalLongSizes(token);
+    }
+
     // ======================== VaultPriceFeed Wrappers ========================
 
     /// @notice Get adjustment basis points (resolved via getIndexToken)
@@ -232,16 +244,6 @@ contract Reader is Governable {
     function isAdjustmentAdditive(address token) external view returns(bool) {
         token = dataReader.getIndexToken(token);
         return vaultPriceFeed.isAdjustmentAdditive(token);
-    }
-
-    /// @notice Set price adjustment (gov only)
-    function setAdjustment(address token, bool _isAdditive, uint256 _adjustmentBps) external onlyGov {
-        vaultPriceFeed.setAdjustment(token, _isAdditive, _adjustmentBps);
-    }
-
-    /// @notice Set spread basis points (gov only)
-    function setSpreadBasisPoints(address token, uint256 _spreadBasisPoints) external onlyGov {
-        vaultPriceFeed.setSpreadBasisPoints(token, _spreadBasisPoints);
     }
 
     /// @notice Get price from vaultPriceFeed (resolved via getIndexToken)

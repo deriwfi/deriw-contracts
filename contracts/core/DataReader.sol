@@ -266,12 +266,12 @@ contract DataReader is Synchron {
         uint256 globalLongSizes,
         uint256 totalSize
     ) {
-        (address pool, address indexToken,, address mappedTargetToken) = memeFactory.getChannelMappedTokenPoolInfo(_indexToken);
+        (address pool,,, address mappedTargetToken) = memeFactory.getChannelMappedTokenPoolInfo(_indexToken);
         if(pool == address(0)) {
             return coinData.getSizeData(_indexToken);
         }
 
-        (, uint256 _memberTokenTargetID, , uint8 _belongTo) = getTokenInfo(indexToken);
+        (, uint256 _memberTokenTargetID, , uint8 _belongTo) = getTokenInfo(_indexToken);
         if(_belongTo == 1) {
             (globalShortSizes, globalLongSizes) = getGlobalSize(_indexToken);
             totalSize = globalLongSizes + globalShortSizes;

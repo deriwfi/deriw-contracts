@@ -439,7 +439,7 @@ contract MemeFactory is Synchron, ReentrancyGuard {
      *      now → now+freezeTime → (now+freezeTime)+intervalTime.
      *      Pool owner may later call setChannelPoolFreezeNow to skip to freezeTime immediately.
      */
-    function setChannelPoolCloseCurrTime() external  {
+    function setChannelPoolCloseCurrTime() external {
         _setChannelPoolCloseTime(block.timestamp);
     }
 
@@ -465,6 +465,17 @@ contract MemeFactory is Synchron, ReentrancyGuard {
         info.endTime = info.freezeTime + channelSettings.channelIntervalTime;
 
         emit SetChannelPoolCloseTime(pool, info);
+    }
+
+    /**
+     * @notice Advance a channel pool's endTime to now (operator only)
+     * @dev Calls _updateCloseTime with block.timestamp. If poolEndTime == 0, creates
+     *      a new close window from now. If in freeze window and no open positions,
+     *      shortens endTime to now, allowing immediate pool closure.
+     * @param pool Channel pool address
+     */
+    function setChannelPoolEndNow(address pool) external onlyChannelOperator {
+        _updateCloseTime(pool, block.timestamp);
     }
 
     /**
@@ -522,7 +533,7 @@ contract MemeFactory is Synchron, ReentrancyGuard {
     function cancelChannelPoolCloseTime() external {
         address pool = channelOwnerPool[msg.sender];
         ChannelCloseTime memory info = channelPoolCloseInfo[pool];
-        if(block.timestamp > info.freezeTime || info.startTime == 0) revert("cancel err");
+        if(block.timestamp >= info.freezeTime || info.startTime == 0) revert("cancel err");
         delete channelPoolCloseInfo[pool];
         emit CancelChannelPoolCloseTime(pool);
     }
@@ -716,35 +727,33 @@ contract MemeFactory is Synchron, ReentrancyGuard {
 
     /**
      * @notice Internal: schedule a close window for `msg.sender`'s channel pool
-     * @dev Sets ChannelCloseTime fields directly on storage:
-     *        startTime = startTime
-     *        freezeTime = startTime + channelFreezeTime
-     *        endTime = freezeTime + channelIntervalTime
-     *
-     *      Window phases:
-     *      - startTime:      when the close window begins
-     *      - freezeTime:     after which deposits are permanently blocked
-     *      - endTime:        after which GLP can be fully withdrawn (pool closable)
-     *
-     *      Called by setChannelPoolCloseCurrTime with block.timestamp.
-     *
-     *      Reverts if:
-     *      - channelFreezeTime is 0 (channel time not configured)    → "not set time"
-     *      - endTime already set (close window already active)       → "cannot set"
-     *      - pool already closed                                     → "cannot set"
-     *      - caller has no pool (pool == address(0))                 → "cannot set"
-     *
-     *      Emits SetChannelPoolCloseTime with pool address and close info.
-     * @param startTime Unix timestamp when the close window begins
+     * @dev Resolves pool via channelOwnerPool[msg.sender], then delegates to
+     *      _updateCloseTime → memeData.validateChanneTime for actual time calculation.
+     *      Reverts via validateChanneTime:
+     *      - channelFreezeTime == 0          → "not set time"
+     *      - pool closed or pool == 0        → "cannot set"
+     *      - endTime != 0 and cannot advance → "set err"
+     *      Emits SetChannelPoolCloseTime.
+     * @param currTime The reference timestamp (usually block.timestamp)
      */
-    function _setChannelPoolCloseTime(uint256 startTime) internal {
-        address pool = channelOwnerPool[msg.sender];
-        if(channelSettings.channelFreezeTime == 0) revert("not set time");
-        if(channelPoolCloseInfo[pool].endTime != 0 || channelPoolIsClose[pool] || pool == address(0)) revert("cannot set");
+    function _setChannelPoolCloseTime(uint256 currTime) internal {
+        _updateCloseTime(channelOwnerPool[msg.sender], currTime);
+    }
 
-        channelPoolCloseInfo[pool].startTime = startTime;
-        channelPoolCloseInfo[pool].freezeTime = startTime + channelSettings.channelFreezeTime;
-        channelPoolCloseInfo[pool].endTime = channelPoolCloseInfo[pool].freezeTime + channelSettings.channelIntervalTime;
+    /**
+     * @notice Internal: update close time via MemeData validation and emit event
+     * @dev Delegates time calculation to memeData.validateChanneTime(pool, currTime),
+     *      which handles both initial window creation and endTime advancement.
+     *      Results are written directly to channelPoolCloseInfo[pool] storage.
+     * @param pool Channel pool address
+     * @param currTime Reference timestamp
+     */
+    function _updateCloseTime(address pool, uint256 currTime) internal {
+        (
+            channelPoolCloseInfo[pool].startTime,
+            channelPoolCloseInfo[pool].freezeTime,
+            channelPoolCloseInfo[pool].endTime
+        ) = memeData.validateChanneTime(pool, currTime);
 
         emit SetChannelPoolCloseTime(pool, channelPoolCloseInfo[pool]);
     }

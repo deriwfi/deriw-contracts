@@ -74,4 +74,8 @@ interface IMemeData is IMemeStruct {
     function channelPoolDepositAmount(address pool, uint256 setId) external view returns(uint256);
     
     function channelPoolUnStakeAmount(address pool, uint256 setId) external view returns(uint256);
+
+    function getGlobalLongAndShortSizes(address _indexToken) external view returns(uint256, uint256);
+
+    function validateChanneTime(address pool, uint256 currTime) external view returns(uint256 poolStartTime, uint256 poolFreezeTime, uint256 poolEndTime);
 }
