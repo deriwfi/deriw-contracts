@@ -150,9 +150,6 @@ contract ReferralData is Synchron, ITransferAmountData {
             haveAllocate[index] = value;
 
             TransferAmountData memory tData;
-
-            tData.beforeAmount = getAmount(USDT, address(this));
-            tData.beforeValue = getAmount(USDT, user);
             IDataReader dataReader = IDataReader(IADL(adlContract).dataReader());
             uint256 poolToChannelID = IMemeFactory(dataReader.memeFactory()).poolToChannelID(user);
             if(poolToChannelID != 0) {
@@ -160,6 +157,8 @@ contract ReferralData is Synchron, ITransferAmountData {
                 user = vault;
                 IVault(vault).directPoolDeposit(indexToToken[index], USDT, amount);
             } 
+            tData.beforeAmount = getAmount(USDT, address(this));
+            tData.beforeValue = getAmount(USDT, user);
             IERC20(USDT).safeTransfer(user, amount);
             tData.afterAmount = getAmount(USDT, address(this));
             tData.afterValue = getAmount(USDT, user);
