@@ -351,7 +351,7 @@ contract MemeData is Synchron, IMemeStruct {
      *         - Updates channelUserInfo state (deduct glpAmount, add unStakeAmount)
      * @param user Claimer address (USDT receiver)
      * @param pool Channel pool address
-     * @param amount GLP amount to redeem (18 decimals)
+     * @param amount Requested USDT withdrawal amount (may exceed user's actual share; capped proportionally)
      */
     function claimChannel(address user, address pool, uint256 amount) external {
         if(msg.sender != address(memeFactory)) revert("No permission");
@@ -428,7 +428,7 @@ contract MemeData is Synchron, IMemeStruct {
      * @param pool Channel pool address (GLP holder)
      * @param indexToken Index token for amount lookups
      * @param tokenOut Output token (USDT)
-     * @param amount Requested withdrawal amount (may exceed user's actual GLP; capped automatically)
+     * @param amount Requested USDT withdrawal amount (may exceed user's actual share; capped proportionally)
      * @param receiver USDT recipient address
      * @return outAmount USDT withdrawn (proportional to user's GLP share)
      * @return burnGlpAmount GLP burned (capped to user's actual GLP)

@@ -676,7 +676,7 @@ contract MemeFactory is Synchron, ReentrancyGuard {
      *      Withdrawal limits (enforced in getChannelOutAmount → DataReader):
      *      - Capped by perWithdrawRate per claim
      *      - Free claims up to withdrawalNumber; after that, cooldown windowTime applies
-     * @param amount GLP amount to redeem (18 decimals)
+     * @param amount Requested USDT withdrawal amount (may exceed user's actual share; capped proportionally)
      */
     function claimChannel(uint256 amount) external {
         address pool = channelOwnerPool[msg.sender];
