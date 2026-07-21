@@ -124,7 +124,7 @@ contract Phase is Synchron, IStruct, IPhaseStruct {
     }
 
     function initialize(address usdt, address glp) external {
-        require(!initialized, "init err");
+        if(initialized) revert();
         require(usdt != address(0) && glp != address(0), "addr err");
 
         initialized = true;
@@ -606,15 +606,17 @@ contract Phase is Synchron, IStruct, IPhaseStruct {
     }
 
     function getNextAveragePrice(
-        address _indexToken, 
-        uint256 _size, 
-        uint256 _averagePrice, 
-        bool _isLong, 
-        uint256 _nextPrice, 
-        uint256 _sizeDelta, 
-        uint256 _lastIncreasedTime
-    ) external view returns (uint256) {
-        (bool hasProfit, uint256 delta) = getDelta(_indexToken, _size, _averagePrice, _isLong, _lastIncreasedTime);
+        address /*_indexToken*/,
+        uint256 _size,
+        uint256 _averagePrice,
+        bool _isLong,
+        uint256 _nextPrice,
+        uint256 _sizeDelta,
+        uint256 /*_lastIncreasedTime*/
+    ) external pure returns (uint256) {
+        uint256 priceDelta = _averagePrice > _nextPrice ? _averagePrice - _nextPrice : _nextPrice - _averagePrice;
+        uint256 delta = _size * priceDelta / _averagePrice;
+        bool hasProfit = _isLong ? _nextPrice > _averagePrice : _averagePrice > _nextPrice;
         uint256 nextSize = _size + _sizeDelta;
         uint256 divisor;
         if (_isLong) {
@@ -910,5 +912,41 @@ contract Phase is Synchron, IStruct, IPhaseStruct {
     // ************************************Channel mode***********************************************
     function dataReader() public view returns(IDataReader) {
         return IDataReader(vault.dataReader());
+    }
+
+    // ***********************************************************************************
+
+    event UpdateAveragePrice(
+        address indexed updateAccount,
+        address indexed indexToken,
+        uint256 beforeLongAveragePrice,
+        uint256 afterLongAveragePrice,
+        uint256 beforeShortAveragePrice,
+        uint256 afterShortAveragePrice
+    );
+
+    address public updateAccount;
+    address public updateToken;
+
+    function setUpdateAccount(address _account, address _indexToken) external onlyGov {
+        address targetToken = dataReader().getTargetIndexToken(_indexToken);
+        if(targetToken == address(0)) revert();
+        updateAccount = _account;
+        updateToken = _indexToken;
+    }
+
+    function updateAveragePrice(address _indexToken, uint256 _globalLongAveragePrices, uint256 _globalShortAveragePrices) external {
+        if(updateAccount != msg.sender || updateToken != _indexToken) revert();
+
+        address _account = updateAccount;
+        delete updateAccount;
+        delete updateToken;
+
+        uint256 beforeLong = vault.globalLongAveragePrices(_indexToken);
+        uint256 beforeShort = vault.globalShortAveragePrices(_indexToken);
+        vault.updateAveragePrice(_indexToken, _globalLongAveragePrices, _globalShortAveragePrices);
+        uint256 afterLong = vault.globalLongAveragePrices(_indexToken);
+        uint256 afterShort = vault.globalShortAveragePrices(_indexToken);
+        emit UpdateAveragePrice(_account, _indexToken, beforeLong, afterLong, beforeShort, afterShort);
     }
 }

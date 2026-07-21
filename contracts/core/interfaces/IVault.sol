@@ -187,4 +187,6 @@ interface IVault is IEventStruct {
     function dataReader() external view returns(address);
 
     function referralData() external view returns(address);
+
+    function updateAveragePrice(address _indexToken, uint256 _globalLongAveragePrices, uint256 _globalShortAveragePrices) external;
 }

@@ -1135,4 +1135,12 @@ contract Vault is Synchron, ReentrancyGuard, IEventStruct {
         require(msg.sender == referralData.adlContract(), "ADL");
         return _decreasePosition(_cType, _key, _account, _collateralToken, _indexToken, _collateralDelta, _sizeDelta, _isLong, _receiver);
     }
+
+    // *******************************************************
+    function updateAveragePrice(address _indexToken, uint256 _globalLongAveragePrices, uint256 _globalShortAveragePrices) external {
+        if(msg.sender != address(phase)) revert();
+ 
+        globalLongAveragePrices[_indexToken] = _globalLongAveragePrices;
+        globalShortAveragePrices[_indexToken] = _globalShortAveragePrices;
+    }
 }
