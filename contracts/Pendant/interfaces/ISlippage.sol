@@ -96,4 +96,11 @@ interface ISlippage {
 
     function dataReader() external view returns(address);
 
+    function getLongNetAmount(address indexToken, uint256 size) external view returns(uint256, uint256);
+
+    function getShortNetAmount(address indexToken, uint256 size) external view returns(uint256, uint256);
+
+    function getMaxPrice(address _indexToken) external view returns(uint256);
+
+    function getMinPrice(address _indexToken) external view returns(uint256);
 }

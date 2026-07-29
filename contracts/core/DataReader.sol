@@ -624,28 +624,7 @@ contract DataReader is Synchron {
         return currAmounts;
     }
 
-    /**
-     * @notice Calculate channel withdrawal amount with per-withdraw rate and window capping
-     * @dev Only callable by MemeData. Applies risk buffer deduction, perWithdrawRate cap,
-     *      and withdrawal number/window time checks. Returns zero amounts if within
-     *      a restricted window or exceeding free withdrawal count.
-     * @param indexToken The index token address
-     * @param tokenOut The output token address
-     * @param amount The requested withdrawal amount
-     * @return outAmount The actual withdrawable amount after caps
-     * @return burnGlpAmount The amount of GLP to burn
-     * @return riskBuffer The risk buffer deducted
-     */
-    function getChannelOutAmount(address indexToken, address tokenOut, uint256 amount) external view returns(uint256 outAmount, uint256 burnGlpAmount, uint256 riskBuffer) {
-        if(msg.sender != address(memeData)) revert("not memeData");
-        (address pool,, address targetToken,) = memeFactory.getChannelMappedTokenPoolInfo(indexToken);
-        uint256 totalGlpSupply = slippage.glpTokenSupply(targetToken, tokenOut);
-        uint256 totalOutAmount = IPhase(vault.phase()).getOutAmount(targetToken, tokenOut, totalGlpSupply);
-
-        riskBuffer = _getRiskBuffer(totalOutAmount);
-        if(totalOutAmount <= riskBuffer) return (outAmount, burnGlpAmount, riskBuffer);
-
-        return _computeChannelOut(pool, targetToken, tokenOut, amount, totalOutAmount, totalGlpSupply, riskBuffer);
+    function getChannelOutAmount(address /*indexToken*/, address /*tokenOut*/, uint256 /*amount*/) external view returns(uint256 /*outAmount*/, uint256 /*burnGlpAmount*/, uint256 /*riskBuffer*/) {
     }
 
     /**
@@ -699,5 +678,52 @@ contract DataReader is Synchron {
         uint256 bufferAmount = amount * bufferRate / 10000;
 
         return bufferAmount > minBufferAmount ? bufferAmount : minBufferAmount;
+    }
+
+    // ***********************************************************************************
+
+    /**
+     * @notice Calculate channel withdrawal amount with whitelist-aware capping
+     * @dev Only callable by MemeData. Behavior depends on user whitelist status:
+     *      - Whitelisted user: skips withdrawal number & window time checks; applies
+     *        perWithdrawRate cap only (rate-limited, no time/count restriction).
+     *      - Non-whitelisted user: delegates to _computeChannelOut for full
+     *        (risk buffer + perWithdrawRate + window time + withdrawal count) capping.
+     * @param user The user address to check whitelist status
+     * @param indexToken The index token address
+     * @param tokenOut The output token address
+     * @param amount The requested withdrawal amount
+     * @return outAmount The actual withdrawable amount after caps
+     * @return burnGlpAmount The amount of GLP to burn
+     * @return riskBuffer The risk buffer deducted
+     */
+    function getUserChannelOutAmount(address user, address indexToken, address tokenOut, uint256 amount) external view returns(uint256 outAmount, uint256 burnGlpAmount, uint256 riskBuffer) {
+        (address pool, address targetToken, uint256 totalOutAmount, uint256 totalGlpSupply, uint256 rb) =
+            _channelOutSetup(indexToken, tokenOut);
+        riskBuffer = rb;
+        if(totalOutAmount <= riskBuffer) return (outAmount, burnGlpAmount, riskBuffer);
+
+        (uint256 perWithdrawRate, , ) = memeFactory.channelPoolConfig();
+        uint256 maxOut = (totalOutAmount - riskBuffer) * perWithdrawRate / 10000;
+
+        if(memeData.isChannelWhitelist(user)) {
+            outAmount = amount > maxOut ? maxOut : amount;
+            burnGlpAmount = outAmount * totalGlpSupply / getPoolAmount(targetToken, tokenOut);
+        } else {
+            return _computeChannelOut(pool, targetToken, tokenOut, amount, totalOutAmount, totalGlpSupply, riskBuffer);
+        }
+    }
+
+    /// @notice Shared setup for channel withdrawal amount calculation
+    /// @dev Resolves indexToken → pool/targetToken, fetches GLP supply + totalOutAmount + riskBuffer.
+    ///      Only callable by MemeData (msg.sender check).
+    function _channelOutSetup(address indexToken, address tokenOut)
+        internal view returns(address pool, address targetToken, uint256 totalOutAmount, uint256 totalGlpSupply, uint256 riskBuffer)
+    {
+        if(msg.sender != address(memeData)) revert("not memeData");
+        (pool,, targetToken,) = memeFactory.getChannelMappedTokenPoolInfo(indexToken);
+        totalGlpSupply = slippage.glpTokenSupply(targetToken, tokenOut);
+        totalOutAmount = IPhase(vault.phase()).getOutAmount(targetToken, tokenOut, totalGlpSupply);
+        riskBuffer = _getRiskBuffer(totalOutAmount);
     }
 }

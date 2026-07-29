@@ -82,4 +82,8 @@ interface IDataReader {
     function getChannelOutAmount(address indexToken, address tokenOut, uint256 amount) external view returns(uint256 outAmount, uint256 burnGlpAmount, uint256 riskBuffer);
 
     function getPoolAmount(address _indexToken, address _tokenOut) external view returns(uint256);
+
+    function isChannelWhitelist(address _user) external view returns(bool);
+
+    function getUserChannelOutAmount(address user, address indexToken, address tokenOut, uint256 amount) external view returns(uint256 outAmount, uint256 burnGlpAmount, uint256 riskBuffer);
 }

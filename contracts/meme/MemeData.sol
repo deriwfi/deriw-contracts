@@ -414,7 +414,8 @@ contract MemeData is Synchron, IMemeStruct {
      * @notice Burn GLP and withdraw USDT from a channel pool (multi-user compatible)
      * @dev Execution order:
      *      1. Validate: amount > 0, receiver != address(0)
-     *      2. getChannelOutAmount → (outAmount, burnGlpAmount) based on pool limits
+     *      2. getUserChannelOutAmount → (outAmount, burnGlpAmount) based on pool limits;
+     *         whitelisted users skip withdrawal count & window time restrictions
      *      3. Load user's actual GLP balance and cap burnGlpAmount:
      *         - _burnGlpAmount = min(burnGlpAmount, userGlp)
      *         - outAmount = outAmount * _burnGlpAmount / burnGlpAmount (proportional)
@@ -424,11 +425,11 @@ contract MemeData is Synchron, IMemeStruct {
      *         - channelPoolUnStakeAmount += outAmount
      *      5. Slippage.subGlpAmount + vault.transferOut
      *      6. Burn GLP (pool.approve + IMintable(glp).burn) + emit RemoveLiquidity
-     * @param user Claimer address (state update target)
+     * @param user Claimer address (state update target + whitelist lookup)
      * @param pool Channel pool address (GLP holder)
      * @param indexToken Index token for amount lookups
      * @param tokenOut Output token (USDT)
-     * @param amount Requested USDT withdrawal amount (may exceed user's actual share; capped proportionally)
+     * @param amount Requested withdrawal amount (may exceed user's actual GLP; capped automatically)
      * @param receiver USDT recipient address
      * @return outAmount USDT withdrawn (proportional to user's GLP share)
      * @return burnGlpAmount GLP burned (capped to user's actual GLP)
@@ -443,8 +444,9 @@ contract MemeData is Synchron, IMemeStruct {
     ) internal returns (uint256, uint256) {
         if(amount == 0 || receiver == address(0)) revert("claim err");
 
-        (uint256 outAmount, uint256 burnGlpAmount,,) = getChannelOutAmount(indexToken, tokenOut, amount);
+        (uint256 outAmount, uint256 burnGlpAmount,,) = getUserChannelOutAmount(user, indexToken, tokenOut, amount);
         {
+            if(burnGlpAmount == 0) revert("burnGlpAmount err");
             uint256 cID = memeFactory.channelPoolSetID(pool);
             uint256 userGlp = channelUserInfo[pool][user][cID].glpAmount;
             uint256 _burnGlpAmount = burnGlpAmount > userGlp ? userGlp : burnGlpAmount;
@@ -527,39 +529,7 @@ contract MemeData is Synchron, IMemeStruct {
         return 10 ** IERC20Metadata(token).decimals();
     }
 
-    /**
-     * @notice Calculate channel withdrawal amount
-     * @dev Two withdrawal paths:
-     *      1. Full withdrawal: all positions closed (longSize==0 && shortSize==0)
-     *         AND pool past close endTime → return entire pool value, burn all GLP
-     *      2. Partial withdrawal (default): positions still open or pool still active
-     *         → delegate to DataReader for capped calculation with risk buffer
-     *      Returns all zeros if indexToken has no channel pool or tokenOut != USDT.
-     * @param indexToken Index token (channel-mapped)
-     * @param tokenOut Output token (must be USDT)
-     * @param amount Requested withdrawal amount
-     * @return outAmount Actual withdrawable amount (after capping)
-     * @return burnGlpAmount GLP tokens to burn proportionally
-     * @return totalOutAmount Total withdrawable pool value
-     * @return riskBuffer Risk buffer deducted from total
-     */
-    function getChannelOutAmount(address indexToken, address tokenOut, uint256 amount) public view returns(uint256 outAmount, uint256 burnGlpAmount, uint256 totalOutAmount, uint256 riskBuffer) {
-        (address pool,, address targetToken,) = memeFactory.getChannelMappedTokenPoolInfo(indexToken);
-        if(pool == address(0) || tokenOut != usdt) {
-            return (0,0,0,0);
-        }
-        {
-            uint256 totalGlpSupply = ISlippage(vault.slippage()).glpTokenSupply(targetToken, tokenOut);
-            totalOutAmount = IPhase(vault.phase()).getOutAmount(targetToken, tokenOut, totalGlpSupply);
-            (uint256 longSize, uint256 shortSize) = getGlobalLongAndShortSizes(targetToken);
-            (,, uint256 endTime) = memeFactory.channelPoolCloseInfo(pool);
-            if(longSize == 0 && shortSize == 0 && endTime > 0 && block.timestamp > endTime) {
-                outAmount = totalOutAmount;
-                burnGlpAmount = totalGlpSupply;
-            } else {
-                (outAmount, burnGlpAmount, riskBuffer) = IDataReader(vault.dataReader()).getChannelOutAmount(indexToken, tokenOut, amount);
-            }
-        }
+    function getChannelOutAmount(address /*indexToken*/, address /*tokenOut*/, uint256 /*amount*/) public view returns(uint256 /*outAmount*/, uint256 /*burnGlpAmount*/, uint256 /*totalOutAmount*/, uint256 /*riskBuffer*/) {
     }
 
     /**
@@ -605,5 +575,59 @@ contract MemeData is Synchron, IMemeStruct {
                 revert("set err");
             }
         }
-    }        
+    }    
+
+    // ***********************************************************************************
+
+    // ---- Channel whitelist ----
+    mapping(address => bool) public isChannelWhitelist;
+
+    event SetChannelWhitelist(address indexed user, bool added);
+
+    /// @notice Add or remove an address from the channel whitelist
+    /// @dev Only callable by governance
+    /// @param _user Address to add or remove
+    /// @param _added true = add, false = remove
+    function setChannelWhitelist(address _user, bool _added) external onlyGov {
+        if(memeFactory.channelOwnerPool(_user) == address(0)) revert("user err");
+        isChannelWhitelist[_user] = _added;
+        emit SetChannelWhitelist(_user, _added);
+    }
+
+    /**
+     * @notice Calculate channel withdrawal amount with whitelist-aware capping
+     * @dev Two withdrawal paths:
+     *      1. Full withdrawal: all positions closed (longSize==0 && shortSize==0)
+     *         AND pool past close endTime → return entire pool value, burn all GLP
+     *      2. Partial withdrawal (default): positions still open or pool still active
+     *         → delegate to DataReader.getUserChannelOutAmount, which lifts
+     *         withdrawal count and window time limits for whitelisted users.
+     *      Returns all zeros if indexToken has no channel pool or tokenOut != USDT.
+     * @param user User address for whitelist lookup
+     * @param indexToken Index token (channel-mapped)
+     * @param tokenOut Output token (must be USDT)
+     * @param amount Requested withdrawal amount
+     * @return outAmount Actual withdrawable amount (after capping)
+     * @return burnGlpAmount GLP tokens to burn proportionally
+     * @return totalOutAmount Total withdrawable pool value
+     * @return riskBuffer Risk buffer deducted from total
+     */
+    function getUserChannelOutAmount(address user, address indexToken, address tokenOut, uint256 amount) public view returns(uint256 outAmount, uint256 burnGlpAmount, uint256 totalOutAmount, uint256 riskBuffer) {
+        (address pool,, address targetToken,) = memeFactory.getChannelMappedTokenPoolInfo(indexToken);
+        if(pool == address(0) || tokenOut != usdt) {
+            return (0,0,0,0);
+        }
+        {
+            uint256 totalGlpSupply = ISlippage(vault.slippage()).glpTokenSupply(targetToken, tokenOut);
+            totalOutAmount = IPhase(vault.phase()).getOutAmount(targetToken, tokenOut, totalGlpSupply);
+            (uint256 longSize, uint256 shortSize) = getGlobalLongAndShortSizes(targetToken);
+            (,, uint256 endTime) = memeFactory.channelPoolCloseInfo(pool);
+            if(longSize == 0 && shortSize == 0 && endTime > 0 && block.timestamp > endTime) {
+                outAmount = totalOutAmount;
+                burnGlpAmount = totalGlpSupply;
+            } else {
+                (outAmount, burnGlpAmount, riskBuffer) = IDataReader(vault.dataReader()).getUserChannelOutAmount(user, indexToken, tokenOut, amount);
+            }
+        }
+    }
 }

@@ -309,8 +309,6 @@ contract Vault is Synchron, ReentrancyGuard, IEventStruct {
 
         totalTokenWeights = _totalTokenWeights + _tokenWeight;
 
-        // validate price feed
-        getMaxPrice(_token);
         string memory _symbol = IERC20Metadata(_token).symbol();
         
         emit SetTokenConfig(_symbol, _token, _tokenDecimals, _isStable, _isShortable, _iswrapped, _isFrom);
@@ -735,13 +733,11 @@ contract Vault is Synchron, ReentrancyGuard, IEventStruct {
     }
 
     function getMaxPrice(address _token) public  view returns (uint256) {
-        _token = dataReader().getIndexToken(_token);
-        return IVaultPriceFeed(priceFeed).getPrice(_token, true, includeAmmPrice, false);
+        return slippage.getMaxPrice(_token);
     }
 
     function getMinPrice(address _token) public  view returns (uint256) {
-        _token = dataReader().getIndexToken(_token);
-        return IVaultPriceFeed(priceFeed).getPrice(_token, false, includeAmmPrice, false);
+        return slippage.getMinPrice(_token);
     }
 
     function tokenToUsdMin(address _token, uint256 _tokenAmount) public  view returns (uint256) {

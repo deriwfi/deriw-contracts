@@ -390,7 +390,9 @@ contract OrderBook is Synchron, ReentrancyGuard, IOStruct, IOrderStruct {
         userOrderIndex.user = _address;
         userOrderIndex.orderIndex = _orderIndex;
 
-        (uint256 currentPrice, uint256 sPrice,) = validateIncreasePositionOrderPrice(
+        // Limit orders use current market price for slippage (no SlippageControl).
+        // Buy limit fills at or below trigger; sell limit fills at or above trigger.
+        (uint256 currentPrice, ,) = validateIncreasePositionOrderPrice(
             order.triggerAboveThreshold,
             order.triggerPrice,
             order.indexToken,
@@ -398,7 +400,7 @@ contract OrderBook is Synchron, ReentrancyGuard, IOStruct, IOrderStruct {
             true,
             order.sizeDelta
         );
-        userOrderIndex.slippagePrice = sPrice;
+        userOrderIndex.slippagePrice = currentPrice;
 
         IVaultUtils(_vault.vaultUtils()).validateLiquidationIncreaseOrderBook(
             oneCode,
@@ -856,25 +858,26 @@ contract OrderBook is Synchron, ReentrancyGuard, IOStruct, IOrderStruct {
         return (userOrderIndex.user, userOrderIndex.orderIndex, userOrderIndex.slippagePrice);
     }
 
+    /// @notice Validate limit order trigger price against current market price
+    /// @dev Limit orders do NOT use SlippageControl — they execute at current market
+    ///      price when the trigger condition is met, not at a slippage-adjusted price.
+    /// @param _triggerAboveThreshold true = buy limit (fill at or below price), false = sell limit
     function validateIncreasePositionOrderPrice(
         bool _triggerAboveThreshold,
         uint256 _triggerPrice,
         address _indexToken,
         bool _maximizePrice,
         bool _raise,
-        uint256 _sizeDelta
+        uint256 /*_sizeDelta*/
     ) public view returns (uint256, uint256, bool) {
         uint256 currentPrice = _maximizePrice
             ? IVault(vault).getMaxPrice(_indexToken) : IVault(vault).getMinPrice(_indexToken);
 
-        ISlippage slippage = ISlippage(IVault(vault).slippage()); 
-        uint256 sPrice = slippage.getVaultPrice(_indexToken, _sizeDelta, _maximizePrice, currentPrice);
-
-        bool isPriceValid = _triggerAboveThreshold ? sPrice > _triggerPrice : sPrice < _triggerPrice;
+        bool isPriceValid = _triggerAboveThreshold ? currentPrice > _triggerPrice : currentPrice < _triggerPrice;
         if (_raise) {
             require(isPriceValid, "OrderBook: invalid price for execution");
         }
-        return (currentPrice, sPrice, isPriceValid);
+        return (currentPrice, currentPrice, isPriceValid);
     }
 }
 

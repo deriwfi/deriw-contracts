@@ -15,8 +15,10 @@ import "./interfaces/ICoinData.sol";
 import "../upgradeability/Synchron.sol";
 import "../core/interfaces/IDataReader.sol";
 import "../meme/interfaces/IMemeFactory.sol";
+import "./interfaces/ISlippageControl.sol";
+import "../oracle/interfaces/IPriceOracle.sol";
 
-contract Slippage is  Synchron, IEventStruct {
+contract Slippage is Synchron, IEventStruct {
     using SafeERC20 for IERC20;
     using EnumerableSet for EnumerableSet.AddressSet;
 
@@ -236,30 +238,15 @@ contract Slippage is  Synchron, IEventStruct {
     }
 
     function getLongRate(address indexToken, uint256 size) public view returns(uint256) {
-        (uint256 globalLongSizes, uint256 netAmount) = getLongNetAmount(indexToken, size);
-        if(netAmount == 0) {
-            return 0;
-        }
+        (, uint256 finalSlip, ) = slippageControl.getSlipData(indexToken, USDT, size, true);
 
-        uint256 _longSize = getPoolAmountSizeThreshold(indexToken, true);
-        if(netAmount > _longSize) {
-            uint256 value = (size + netAmount - _longSize);
-            return value * getFactor(indexToken) * muti / (globalLongSizes * baseRate);
-        }
-
-        return 0;
+        return finalSlip;
     }
 
     function getShortRate(address indexToken, uint256 size)  public view returns(uint256) {
-        (uint256 globalShortSizes, uint256 netAmount) = getShortNetAmount(indexToken, size);
+        (, uint256 finalSlip, ) = slippageControl.getSlipData(indexToken, USDT, size, false);
 
-        uint256 _shortSize = getPoolAmountSizeThreshold(indexToken, false);
-
-        if(netAmount > _shortSize) {
-            uint256 value = (size + netAmount - _shortSize);
-            return value * getFactor(indexToken) *  muti / (globalShortSizes * baseRate);
-        }
-        return 0;
+        return finalSlip;
     }
 
     function getPoolAmountSizeThreshold(address indexToken, bool isLong) public view returns(uint256) {
@@ -1100,5 +1087,33 @@ contract Slippage is  Synchron, IEventStruct {
 
     function memeFactory() public view returns(IMemeFactory) {
         return IMemeFactory(dataReader.memeFactory());
+    }
+
+    // ***********************************************************************************
+    /// @notice SlippageControl contract for two-stage slip calculation (Layer 1 size impact + Layer 2 skew adjustment)
+    ISlippageControl public slippageControl;
+
+    /// @notice Set the SlippageControl contract address
+    /// @dev Only callable by governance. Once set, getLongRate/getShortRate delegate to SlippageControl.
+    /// @param _slippageControl SlippageControl proxy address (must be non-zero)
+    function setSlippageControl(address _slippageControl) external onlyGov {
+        if(_slippageControl == address(0)) revert();
+        slippageControl = ISlippageControl(_slippageControl);
+    }
+
+    // ***********************************************************************************
+    IPriceOracle public priceOracle;
+    
+    function setPriceOracle(address _priceOracle) external onlyGov {
+        if(_priceOracle == address(0)) revert();
+        priceOracle = IPriceOracle(_priceOracle);
+    }
+
+    function getMaxPrice(address _indexToken) external view returns(uint256) {
+        return priceOracle.getMaxPrice(_indexToken);
+    }
+
+    function getMinPrice(address _indexToken) external view returns(uint256) {
+        return priceOracle.getMinPrice(_indexToken);
     }
 }  

@@ -15,7 +15,6 @@ contract VaultReader {
         uint256 propsLength = 12;
 
         IVault vaultFor = IVault(_vault);
-        IVaultPriceFeed priceFeed = IVaultPriceFeed(vaultFor.priceFeed());
         address vault_ = IPositionRouter(_positionRouter).vault();
         require(vault_ == address(vaultFor), "vault err");
         IDataReader dataReader = IDataReader(vaultFor.dataReader());
@@ -40,8 +39,8 @@ contract VaultReader {
             amounts[i * propsLength + 7] = vaultFor.getMinPrice(token);
             amounts[i * propsLength + 8] = vaultFor.getMaxPrice(token);
             amounts[i * propsLength + 9] = vaultFor.guaranteedUsd(token, usdt);
-            amounts[i * propsLength + 10] = priceFeed.getPrimaryPrice(tokenFor, false);
-            amounts[i * propsLength + 11] = priceFeed.getPrimaryPrice(tokenFor, true);
+            amounts[i * propsLength + 10] = 0;
+            amounts[i * propsLength + 11] = 0;
         }
 
         return amounts;
