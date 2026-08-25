@@ -371,73 +371,13 @@ contract Phase is Synchron, IStruct, IPhaseStruct {
         return size;
     }
 
-    function getUserFeeRate(address pool, address indexToken) public view returns(uint256, uint256) {
-        (uint256 poolValue, bool isFundraise, bool isClaim) = dataReader().getPoolValue(indexToken);
+    function getUserFeeRate(address /*pool*/, address /*indexToken*/) public view returns(uint256, uint256) {}
 
-        uint256 uDeci =  10 ** IERC20Metadata(USDT).decimals();
-        int256 initValue = int256(poolValue);
-        int256 ratePoolValue = int256(poolValue * getPoolRate(pool) * getCurrRate(indexToken) / baseRate / baseRate);
-        uint256 pAmount = dataReader().getUsePoolAmounts(indexToken, USDT);
-        int256 pValue =  int256(pAmount * getTokenPrice(USDT) / uDeci); 
+    function getFeeRate(address /*indexToken*/, int256 /*ratePoolValue*/, int256 /*loss*/) public view returns(uint256, uint256) {}
 
-        int256 loss;  
-        if(pValue < initValue) {
-            loss = initValue - pValue;
-        }
+    function getLongFeeRate(address /*indexToken*/, uint256 /*longValue*/) public view returns(uint256) {}
 
-        if(memeData.isAddMeme(indexToken)) {
-            return getFeeRate(indexToken, ratePoolValue, loss);
-        } else {
-            if(isFundraise && !isClaim) {
-                return getFeeRate(indexToken, ratePoolValue, loss);
-            }
-            return (0, 0);
-        }
-    }
-
-    function getFeeRate(
-        address indexToken, 
-        int256 ratePoolValue,
-        int256 loss
-    ) public view returns(uint256, uint256) {
-        (int256 longValue, int256 shortValue) = getLongShortValue(indexToken);
-
-        int256 totalSizeValue = longValue + shortValue;
-        if(totalSizeValue > 0 && totalSizeValue + loss >= ratePoolValue) {
-            if(longValue > 0 && shortValue > 0) {
-                return (getLongFeeRate(indexToken, uint256(longValue)), getShortFeeRate(indexToken, uint256 (shortValue)));
-            }
-
-            if(longValue > 0) {
-                return (getLongFeeRate(indexToken, uint256(longValue)), 0);
-            }
-
-            if(shortValue > 0) {
-                return (0, getShortFeeRate(indexToken, uint256 (shortValue)));              
-            }
-        } else if((totalSizeValue < 0 && totalSizeValue + loss >= ratePoolValue)) {
-            if(longValue > 0) {
-                return (getLongFeeRate(indexToken, uint256(longValue)), 0);
-            }
-
-            if(shortValue > 0) {
-                return (0, getShortFeeRate(indexToken, uint256(shortValue)));              
-            }
-        }
-        return(0,0);
-    }
-
-    function getLongFeeRate(address indexToken, uint256 longValue) public view returns(uint256) {
-        uint256 indexTokenValue = getIndextokenValue(indexToken);
-
-        return longValue * exponent / indexTokenValue; 
-    }
-
-    function getShortFeeRate(address indexToken, uint256 shortValue) public view returns(uint256) {
-        uint256 indexTokenValue = getIndextokenValue(indexToken);
-
-        return shortValue * exponent / indexTokenValue; 
-    }
+    function getShortFeeRate(address /*indexToken*/, uint256 /*shortValue*/) public view returns(uint256) {}
 
     function getIndextokenValue(address indexToken) public view returns(uint256) {
         uint256 rate = getCurrRate(indexToken);
@@ -658,9 +598,9 @@ contract Phase is Synchron, IStruct, IPhaseStruct {
         bool _isLong, 
         uint256 _lastIncreasedTime
     ) public view returns (bool, uint256) {
-        uint256 price = _isLong ? vault.getMinPrice(_indexToken) : vault.getMaxPrice(_indexToken);
+        (,uint256 sPrice,) = ISlippage(vault.slippage()).getDecreaseSlipPrice(_indexToken, _size, _isLong);
 
-        return _getDelta(_indexToken, _size, _averagePrice, _isLong, _lastIncreasedTime, price);
+        return _getDelta(_indexToken, _size, _averagePrice, _isLong, _lastIncreasedTime, sPrice);
     }
 
     function _getDelta(
@@ -671,6 +611,7 @@ contract Phase is Synchron, IStruct, IPhaseStruct {
         uint256 _lastIncreasedTime,
         uint256 price
     ) internal view returns (bool, uint256) {
+        if(_averagePrice == 0) revert("_averagePrice err");
 
         uint256 priceDelta = _averagePrice > price ? _averagePrice - price : price - _averagePrice;
         uint256 delta = _size * priceDelta / _averagePrice;

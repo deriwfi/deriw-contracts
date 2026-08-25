@@ -19,6 +19,8 @@ interface ISlippageControl {
     function getSkewAdjustment(address _indexToken, address _collateralToken, uint256 _sizeDelta, bool _isLong, uint256 _baseSlip)
         external view returns(int256 skewAdjustment);
 
+    function getDecreaseSlipPrice(address indexToken, uint256 size, bool isLong) external view returns(uint256, uint256, uint256);
+    
     // ============ Public State Getters ============
 
     function MUTI() external view returns(uint256);

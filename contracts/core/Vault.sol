@@ -504,14 +504,9 @@ contract Vault is Synchron, ReentrancyGuard, IEventStruct {
             ); 
         }
 
-        dData.price =_isLong ? getMinPrice(_indexToken) : getMaxPrice(_indexToken);
-        if (_isLong) {
-            (, uint256 _globalLongAveragePrices) = slippage.getDecreasePositionNextGlobalLongShortData(dData.account, dData.collateralToken, dData.indexToken, dData.price, dData.sizeDelta, true);
-            globalLongAveragePrices[dData.indexToken] = _globalLongAveragePrices;
-        } else {
-            (, uint256 _globalShortAveragePrice) = slippage.getDecreasePositionNextGlobalLongShortData(dData.account, dData.collateralToken, dData.indexToken, dData.price, dData.sizeDelta, false);
-            globalShortAveragePrices[dData.indexToken] = _globalShortAveragePrice;
-        }
+        // Decrease uses slippage-adjusted price (sPrice): closing long sells at bid-slip, closing short buys at ask-slip
+        (,dData.price,) = slippage.getDecreaseSlipPrice(dData.indexToken, dData.sizeDelta, _isLong); 
+        _updateGlobalAveragePrice(dData.account, dData.collateralToken, dData.indexToken, dData.price, dData.sizeDelta, _isLong);
 
         uint8 _cType = cType;
         uint256 collateral = position.collateral;
@@ -639,27 +634,19 @@ contract Vault is Synchron, ReentrancyGuard, IEventStruct {
         {
             address addr = _account;
             if (liquidationState == 2) {
-                uint256 _size = position.size;
                 // max leverage exceeded but there is collateral remaining after deducting losses so decreasePosition instead
-                _decreasePosition(4, phase.typeCode(4),  addr, _collateralToken, _indexToken, 0, _size, _isLong, addr);
+                _decreasePosition(4, phase.typeCode(4), addr, _collateralToken, _indexToken, 0, position.size, _isLong, addr);
                 includeAmmPrice = true;
                 return;
             }
         }
 
-        uint256 markPrice = _isLong ? getMinPrice(_indexToken) : getMaxPrice(_indexToken);
-        {
-            if (_isLong) {
-                (, uint256 _globalLongAveragePrices) = slippage.getDecreasePositionNextGlobalLongShortData(_account, _collateralToken, _indexToken, markPrice, position.size, true);
-                globalLongAveragePrices[_indexToken] = _globalLongAveragePrices;
-            } else {
-                (, uint256 _globalShortAveragePrice) = slippage.getDecreasePositionNextGlobalLongShortData(_account, _collateralToken, _indexToken, markPrice, position.size, false);
-                globalShortAveragePrices[_indexToken] = _globalShortAveragePrice;
-            }
-        }
+        // Full liquidation: use slippage-adjusted price to keep the global average price
+        // consistent with getRealisedPnl's internal price source (both use getDecreaseSlipPrice)
+        (,uint256 markPrice,) = slippage.getDecreaseSlipPrice(_indexToken, position.size, _isLong); 
+        _updateGlobalAveragePrice(_account, _collateralToken, _indexToken, markPrice, position.size, _isLong);
 
         {
-
             uint256 feeTokens = usdToTokenMin(_collateralToken, marginFees);
 
             _transferFee(3, phase.typeCode(3), key, _collateralToken, _account, feeTokens, _indexToken);
@@ -795,9 +782,7 @@ contract Vault is Synchron, ReentrancyGuard, IEventStruct {
         uint256 _averagePrice, 
         bool _isLong, 
         uint256 _lastIncreasedTime
-    ) public  view returns (bool, uint256) {
-        _validate(_averagePrice > 0, 38);
-        
+    ) public  view returns (bool, uint256) {        
         return phase.getDelta(_indexToken, _size, _averagePrice, _isLong, _lastIncreasedTime);
     }
 
@@ -1138,5 +1123,24 @@ contract Vault is Synchron, ReentrancyGuard, IEventStruct {
  
         globalLongAveragePrices[_indexToken] = _globalLongAveragePrices;
         globalShortAveragePrices[_indexToken] = _globalShortAveragePrices;
+    }
+
+    // *******************************************************
+    // Update the global long/short average price for an index token after a decrease/liquidation
+    function _updateGlobalAveragePrice(
+        address _account,
+        address _collateralToken,
+        address _indexToken,
+        uint256 _price,
+        uint256 _sizeDelta,
+        bool _isLong
+    ) internal {
+        if (_isLong) {
+            (, uint256 _globalLongAveragePrices) = slippage.getDecreasePositionNextGlobalLongShortData(_account, _collateralToken, _indexToken, _price, _sizeDelta, true);
+            globalLongAveragePrices[_indexToken] = _globalLongAveragePrices;
+        } else {
+            (, uint256 _globalShortAveragePrice) = slippage.getDecreasePositionNextGlobalLongShortData(_account, _collateralToken, _indexToken, _price, _sizeDelta, false);
+            globalShortAveragePrices[_indexToken] = _globalShortAveragePrice;
+        }
     }
 }

@@ -480,7 +480,7 @@ contract PositionRouter is Synchron, ReentrancyGuard, ITransferAmountData {
         );
     }
 
-    function executeIncreasePosition(bytes32 _key) public nonReentrant returns (bool) {
+    function executeIncreasePosition(bytes32 _key) public onlyPositionKeeper nonReentrant returns (bool) {
         uint256 index = increasePositionKeyToIndex[_key];
         if(!increaseIndex.contains(index)) {
             emit IncreasePositionNotExist(index);
@@ -621,7 +621,7 @@ contract PositionRouter is Synchron, ReentrancyGuard, ITransferAmountData {
        return _cancelIncreasePosition(_key);
     }
 
-    function executeDecreasePosition(bytes32 _key) public nonReentrant returns (bool) {
+    function executeDecreasePosition(bytes32 _key) public onlyPositionKeeper nonReentrant returns (bool) {
         uint256 index = decreasePositionKeyToIndex[_key];
         if(!decreaseIndex.contains(index)) {
             emit DecreasePositionNotExist(index);
@@ -912,18 +912,23 @@ contract PositionRouter is Synchron, ReentrancyGuard, ITransferAmountData {
         address _receiver, 
         uint256 _price
     ) internal returns (uint256) {
-        address _vault = vault;
+        IVault _vault = IVault(vault);
+        {
+            (uint256 size, ,,,,,,) = _vault.getPosition(_account, usdt, _indexToken, _isLong);
+            uint256 sizeDelta = _sizeDelta > size ? size : _sizeDelta;
+            (decreaseSlippagePrice.price, decreaseSlippagePrice.sPrice, decreaseSlippagePrice.rate) = ISlippage(_vault.slippage()).getDecreaseSlipPrice(_indexToken, sizeDelta, _isLong);            
 
-        uint256 markPrice = _isLong ? IVault(_vault).getMinPrice(_indexToken) : IVault(_vault).getMaxPrice(_indexToken);
-        if (_isLong) {
-            require(markPrice >= _price, "markPrice < price");
-        } else {
-            require(markPrice <= _price, "markPrice > price");
+            uint256 markPrice = decreaseSlippagePrice.sPrice;
+            if (_isLong) {
+                require(markPrice >= _price, "markPrice < price");
+            } else {
+                require(markPrice <= _price, "markPrice > price");
+            }
+   
         }
 
-        address timelock = IVault(_vault).gov();
-
-        ITimelock(timelock).enableLeverage(_vault);
+        address timelock = _vault.gov();
+        ITimelock(timelock).enableLeverage(vault);
         uint256 amountOut = IRouter(router).pluginDecreasePosition(
             _key, 
             _account, 
@@ -933,9 +938,9 @@ contract PositionRouter is Synchron, ReentrancyGuard, ITransferAmountData {
             _sizeDelta, 
             _isLong, 
             _receiver
-        )
-        ;
-        ITimelock(timelock).disableLeverage(_vault);
+        );
+        delete decreaseSlippagePrice;
+        ITimelock(timelock).disableLeverage(vault);
 
         return amountOut;
     }
@@ -944,7 +949,6 @@ contract PositionRouter is Synchron, ReentrancyGuard, ITransferAmountData {
         return IERC20(token).balanceOf(account);
     }
 
-    
     function _increasePosition(
         bytes32 _key,
         address _vault,
@@ -1098,7 +1102,6 @@ contract PositionRouter is Synchron, ReentrancyGuard, ITransferAmountData {
         return true;
     }
 
-
     function getSlippagePrice(
         bytes32 key,
         address indexToken, 
@@ -1113,7 +1116,6 @@ contract PositionRouter is Synchron, ReentrancyGuard, ITransferAmountData {
             (,uint256 sPrice) = getVaultPrice(indexToken, size, isLong);
             return sPrice;
         }
-
     }
 
     function getVaultPrice(
@@ -1129,4 +1131,21 @@ contract PositionRouter is Synchron, ReentrancyGuard, ITransferAmountData {
 
         return (price, sPrice);
     }
+
+    // *********************************************************************
+    // Temporary decrease slippage price cache: set in _decreasePosition before the vault call,
+    // read back by SlippageControl.getDecreaseSlipPrice to reuse the same price within one execution,
+    // then deleted after pluginDecreasePosition to avoid stale values across transactions.
+    struct temporaryDecreaseSlippagePrice {
+        uint256 price;   // raw market price (bid for closing long, ask for closing short)
+        uint256 sPrice;  // slippage-adjusted price
+        uint256 rate;    // slippage rate (MUTI-scaled)
+    }
+    temporaryDecreaseSlippagePrice decreaseSlippagePrice;
+
+    // Getter for the cached decrease slippage price; only callable by the SlippageControl contract
+    function getDecreaseSlippagePrice() external view returns(uint256, uint256, uint256) {
+        if(msg.sender != ISlippage(IVault(vault).slippage()).slippageControl()) revert("not slippageControl");
+        return (decreaseSlippagePrice.price, decreaseSlippagePrice.sPrice, decreaseSlippagePrice.rate);
+    }    
 }

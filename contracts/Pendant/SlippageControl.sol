@@ -4,6 +4,9 @@ pragma solidity ^0.8.0;
 
 import "../core/interfaces/IVault.sol";
 import "../core/interfaces/IDataReader.sol";
+import "./interfaces/ISlippage.sol";
+import "../core/interfaces/IPositionRouter.sol";
+import "../core/interfaces/IOrderBook.sol";
 import "../upgradeability/Synchron.sol";
 
 contract SlippageControl is Synchron {
@@ -16,12 +19,12 @@ contract SlippageControl is Synchron {
     /// @notice Basis points divisor (10000 = 100%, 1 = 0.01%)
     uint256 public constant BASE_RATE_DIVISOR = 10000;
 
-    /// @notice Default base cap rate when not explicitly configured (10% = 1000 bp)
-    uint256 public constant DEFAULT_BASE_CAP_RATE = 1000;
+    /// @notice Default base cap rate when not explicitly configured (5% = 500 bp)
+    uint256 public constant DEFAULT_BASE_CAP_RATE = 500;
 
     /// @notice Default impact factor (k) when not explicitly configured per collection
-    /// @dev 10% = 1000 basis points. Controls the overall slippage curve amplitude.
-    uint256 public constant DEFAULT_IMPACT_FACTOR_K = 1000;
+    /// @dev 5% = 500 basis points. Controls the overall slippage curve amplitude.
+    uint256 public constant DEFAULT_IMPACT_FACTOR_K = 500;
 
     /// @notice Default exponent (n) controlling curve steepness per order size
     /// @dev n ∈ {1,2,3}: linear / quadratic / cubic curves. Larger orders face disproportionately higher slippage.
@@ -55,7 +58,17 @@ contract SlippageControl is Synchron {
     /// @notice The vault contract for pool amount and position data
     IVault public vault;
 
+    /// @notice DataReader contract for pool size / OI / average price data
     IDataReader public dataReader;
+
+    /// @notice Slippage contract for rate computation (getRate) and decrease price passthrough
+    ISlippage public slippage;
+
+    /// @notice PositionRouter contract for reading the market-decrease cached price
+    IPositionRouter public positionRouter;
+
+    /// @notice OrderBook contract for reading the limit-decrease cached market price (no slippage)
+    IOrderBook public orderBook;
 
     /// @notice Default slippage params by (poolTargetToken, memberTokenTargetID) — belongTo == 2
     mapping(address => mapping(uint256 => SlippageParams)) _defaultSlippageTargetIDParams;
@@ -130,15 +143,24 @@ contract SlippageControl is Synchron {
     /// @dev Only callable by governance. All addresses must be non-zero.
     function setContract(
         address _vault,
-        address _dataReader
+        address _dataReader,
+        address _slippage,
+        address _positionRouter,
+        address _orderBook
     ) external onlyGov {
         if (
             _vault == address(0) ||
-            _dataReader == address(0)
+            _dataReader == address(0) ||
+            _slippage == address(0) ||
+            _positionRouter == address(0) ||
+            _orderBook == address(0)
         ) revert("addr err");
 
         vault = IVault(_vault);
         dataReader = IDataReader(_dataReader);
+        slippage = ISlippage(_slippage);
+        positionRouter = IPositionRouter(_positionRouter);
+        orderBook = IOrderBook(_orderBook);
     }
 
     /// @notice Transfer governance to a new account
@@ -157,6 +179,14 @@ contract SlippageControl is Synchron {
     ///      Channel tokens resolve to their underlying main-pool token via getIndexToken,
     ///      and the pool target token is derived automatically via getTargetIndexToken,
     ///      so channel tokens inherit the main-pool default configuration.
+    ///      Field validation:
+    ///      - defaultBaseCapRate: caps Layer-1 baseSlip (baseSlip = min(k × ratioⁿ, baseCapRate)),
+    ///        in basis points, range (0, 1000] i.e. ≤ 10%.
+    ///      - defaultImpactFactorK: Layer-1 impact coefficient k (rawBaseSlip = k × ratioⁿ / DIVISOR),
+    ///        in basis points, range (0, 1000] i.e. ≤ 10%.
+    ///      - defaultExponentN: Layer-1 power exponent n, range [1, 3].
+    ///      - defaultSoftThresholdRate: skew surcharge trigger threshold, in basis points,
+    ///        range (0, BASE_RATE_DIVISOR].
     /// @param _indexToken Any token within the target pool/collection.
     ///      For collections, passing any member token resolves to the correct collection.
     ///      For channel tokens, resolves to the underlying main-pool token automatically.
@@ -169,10 +199,10 @@ contract SlippageControl is Synchron {
         address targetToken = dataReader.getTargetIndexToken(_indexToken);
         (, uint256 memberTokenTargetID, , uint8 belongTo) = dataReader.getTokenInfo(_indexToken);
         if(belongTo != 1 && belongTo != 2) revert("belongTo err");
-        if(_params.defaultBaseCapRate == 0) revert("defaultBaseCapRate err");
-        if(_params.defaultImpactFactorK == 0) revert("defaultImpactFactorK err");
-        if(_params.defaultExponentN == 0 || _params.defaultExponentN > 3) revert("defaultExponentN err");
-        if(_params.defaultSoftThresholdRate == 0 || _params.defaultSoftThresholdRate > BASE_RATE_DIVISOR) revert("defaultSoftThresholdRate err");
+        if(_params.defaultBaseCapRate == 0 || _params.defaultBaseCapRate > 1000) revert("defaultBaseCapRate err");  // defaultBaseCapRate ∈ (0, 1000]
+        if(_params.defaultImpactFactorK == 0 || _params.defaultImpactFactorK > 1000) revert("defaultImpactFactorK err");  // defaultImpactFactorK ∈ (0, 1000]
+        if(_params.defaultExponentN == 0 || _params.defaultExponentN > 3) revert("defaultExponentN err");  // defaultExponentN ∈ [1, 3]
+        if(_params.defaultSoftThresholdRate == 0 || _params.defaultSoftThresholdRate > BASE_RATE_DIVISOR) revert("defaultSoftThresholdRate err");  // defaultSoftThresholdRate ∈ (0, BASE_RATE_DIVISOR]
 
         SlippageParams memory p = _params;
         p.isSet = true;
@@ -190,6 +220,13 @@ contract SlippageControl is Synchron {
     ///      from getDefaultSlippageParams. Does NOT fall back to defaults for any field.
     ///      Channel tokens resolve to their underlying main-pool token via getIndexToken,
     ///      so the params are stored under the main-pool token key.
+    ///      Field validation:
+    ///      - indexToken must be non-zero.
+    ///      - baseCapRate: caps Layer-1 baseSlip (baseSlip = min(k × ratioⁿ, baseCapRate)),
+    ///        in basis points, range (0, 1000] i.e. ≤ 10%.
+    ///      - impactFactorK: Layer-1 impact coefficient k (rawBaseSlip = k × ratioⁿ / DIVISOR),
+    ///        in basis points, range (0, 1000] i.e. ≤ 10%.
+    ///      - exponentN: Layer-1 power exponent n, range [1, 3].
     /// @param _params Array of IndexTokenSlippageParams to set
     function setIndexTokenSlippageParams(IndexTokenSlippageParams[] calldata _params) external onlyGov {
         uint256 len = _params.length;
@@ -197,20 +234,23 @@ contract SlippageControl is Synchron {
         for (uint256 i = 0; i < len; i++) {
             IndexTokenSlippageParams calldata p = _params[i];
             if(p.indexToken == address(0)) revert("indexToken err");
-            if(p.baseCapRate == 0) revert("baseCapRate err");
-            if(p.impactFactorK == 0) revert("impactFactorK err");
-            if(p.exponentN == 0 || p.exponentN > 3) revert("exponentN err");
+            if(p.baseCapRate == 0 || p.baseCapRate > 1000) revert("baseCapRate err");  // baseCapRate ∈ (0, 1000]
+            if(p.impactFactorK == 0 || p.impactFactorK > 1000) revert("impactFactorK err");  // impactFactorK ∈ (0, 1000]
+            if(p.exponentN == 0 || p.exponentN > 3) revert("exponentN err");  // exponentN ∈ [1, 3]
             address indexToken = dataReader.getIndexToken(p.indexToken);
             _indexTokenSlippageParams[indexToken] = p;
             emit SetIndexTokenSlippageParams(indexToken, p.baseCapRate, p.impactFactorK, p.exponentN);
         }
     }
 
-    /// @notice Set the global slip cap multiplier for finalSlipCap = multiplier × defaultBaseCapRate
-    /// @dev Only callable by governance. Multiplier in basis points (e.g. 12000 = 1.2x).
-    /// @param _multiplier The multiplier value (basis points, must be > 0)
+    /// @notice Set the global slip cap multiplier used to compute finalSlipCap
+    /// @dev finalSlipCap = slipCapMultiplier × baseCapRate / BASE_RATE_DIVISOR.
+    ///      Only callable by governance. Value in basis points relative to baseCapRate,
+    ///      e.g. 12000 = 1.2× (the default), 20000 = 2×. Must be > 0 and ≤ 20000.
+    ///      When unset (0), getSlipCapMultiplier falls back to DEFAULT_SLIP_CAP_MULTIPLIER (12000).
+    /// @param _multiplier The multiplier in basis points (0 < _multiplier ≤ 20000)
     function setSlipCapMultiplier(uint256 _multiplier) external onlyGov {
-        if(_multiplier == 0) revert("multiplier err");
+        if(_multiplier == 0 || _multiplier > 20000) revert("multiplier err");
         slipCapMultiplier = _multiplier;
         emit SetSlipCapMultiplier(_multiplier);
     }
@@ -288,7 +328,7 @@ contract SlippageControl is Synchron {
 
     // ============ Slip Calculation ============
 
-    /// @notice Calculate order-size-based slippage (baseSlip and finalSlip) in basis points
+    /// @notice Calculate order-size-based slippage (baseSlip and finalSlip), MUTI-scaled (1e8)
     /// @dev Formula:
     ///      Dusd = poolAmounts × tokenToUsdMin × currRate / BASE_RATE_DIVISOR
     ///      ratio = _sizeDelta / D  (scaled by MUTI)
@@ -299,15 +339,15 @@ contract SlippageControl is Synchron {
     /// @param _collateralToken The collateral token (for pool depth)
     /// @param _sizeDelta Order notional value in USD (30 decimals)
     /// @param _isLong true = long, false = short (for skew direction)
-    /// @return baseSlip Slip before cap (basis points)
-    /// @return finalSlip Slip after skew adjustment + finalSlipCap (basis points)
-    /// @return skewAdjustment Skew adjustment (positive = surcharge, negative = discount, basis points)
+    /// @return baseSlip Slip before cap (MUTI-scaled, 1e8 = 100%)
+    /// @return finalSlip Slip after skew adjustment + finalSlipCap (MUTI-scaled, 1e8 = 100%)
+    /// @return skewAdjustment Skew adjustment (positive = surcharge, negative = discount, MUTI-scaled, 1e8 = 100%)
     function getSlipData(
         address _indexToken,
         address _collateralToken,
         uint256 _sizeDelta,
         bool _isLong
-    ) public view returns(uint256 baseSlip, uint256 finalSlip, int256 skewAdjustment) {
+    ) external view returns(uint256 baseSlip, uint256 finalSlip, int256 skewAdjustment) {
         // Layer 1: order-size impact
         uint256 baseCapRate;
         (baseSlip, baseCapRate) = _computeLayer1Slip(_indexToken, _collateralToken, _sizeDelta);
@@ -376,8 +416,8 @@ contract SlippageControl is Synchron {
     /// @param _collateralToken The collateral token for pool depth Dusd
     /// @param _sizeDelta Order notional value in USD
     /// @param _isLong true = long (increase long OI), false = short (increase short OI)
-    /// @param _baseSlip Base slip from Layer 1 (basis points)
-    /// @return skewAdjustment Adjustment amount (positive = surcharge, negative = discount, in basis points)
+    /// @param _baseSlip Base slip from Layer 1 (MUTI-scaled, 1e8 = 100%)
+    /// @return skewAdjustment Adjustment amount (positive = surcharge, negative = discount, MUTI-scaled, 1e8 = 100%)
     function getSkewAdjustment(
         address _indexToken,
         address _collateralToken,
@@ -426,7 +466,7 @@ contract SlippageControl is Synchron {
     ///      At max imbalance, total slip = baseSlip + skewAdjustment ≤ finalSlipCap
     /// @param _indexToken The index token for param lookup
     /// @param _softThresholdRate Soft threshold as fraction of D (basis points)
-    /// @return skewSurchargeRate Surcharge slope (basis points per unit of D exceeded)
+    /// @return skewSurchargeRate Surcharge slope (MUTI-scaled, 1e8 = 100% per unit of D exceeded)
     function _computeSkewSurchargeRate(
         address _indexToken,
         uint256 _softThresholdRate
@@ -470,5 +510,60 @@ contract SlippageControl is Synchron {
     /// @notice Internal helper to read slip cap multiplier without external call
     function getSlipCapMultiplierCache() internal view returns(uint256) {
         return slipCapMultiplier > 0 ? slipCapMultiplier : DEFAULT_SLIP_CAP_MULTIPLIER;
+    }
+
+    /// @notice Returns the execution price (with slippage) for a decrease/close position
+    /// @dev Resolution order:
+    ///      1. Market decrease via PositionRouter — use its cached (price, sPrice, rate).
+    ///      2. Limit decrease via OrderBook — no slippage, return (price, price, 0) with rate = 0.
+    ///      3. Fallback (liquidation / room close / ADL / auto-decrease) — compute slippage here.
+    ///      For case 3, closing a long reduces longOI (≈ increasing shortOI) and closing a
+    ///      short reduces shortOI (≈ increasing longOI), so the skew is computed with !isLong
+    ///      while the price add/subtract below still follows the position direction (isLong).
+    /// @param indexToken The index token address
+    /// @param size The position size being decreased
+    /// @param isLong Whether the position being closed is long
+    /// @return price The base market price (min for long, max for short)
+    /// @return sPrice The slippage-adjusted execution price (equals price when no slippage)
+    /// @return rate The slippage rate in bps (0 means no slippage)
+    function getDecreaseSlipPrice(address indexToken, uint256 size, bool isLong) external view returns(uint256, uint256, uint256) {
+        // 1. Market decrease: read the price cached by PositionRouter during execution
+        (uint256 price, uint256 sPrice, uint256 rate) = positionRouter.getDecreaseSlippagePrice();
+        if(sPrice > 0) {
+            return (price, sPrice, rate);
+        }
+
+        // 2. Limit decrease: read the market price cached by OrderBook; no slippage applies
+        price = orderBook.getTemporaryOrderBookDecreasePrice();
+        if(price > 0) {
+            return (price, price, 0);
+        }
+
+        // 3. Fallback: base price uses position direction (long → bid/min, short → ask/max)
+        price = isLong ? vault.getMinPrice(indexToken) : vault.getMaxPrice(indexToken);
+        sPrice = price;
+        // Decrease reverses the OI direction: closing long reduces longOI (≈ increasing shortOI),
+        // closing short reduces shortOI (≈ increasing longOI). So pass !isLong to skew computation,
+        // while the price add/subtract below still uses the position direction (isLong).
+        rate = slippage.getRate(indexToken, size, !isLong);
+        
+        if(rate > 0) {
+            if(!isLong) {
+                // closing short (buy back) → price moves up by slip
+                sPrice = price * (MUTI + rate) / MUTI;
+            } else {
+                // closing long (sell) → price moves down by slip
+                if(rate < MUTI) {
+                    sPrice = price * (MUTI - rate) / MUTI;
+                } else {
+                    revert("getDecreaseSlipPrice exceeds 100%");    
+                }  
+            }
+        }
+        return (price, sPrice, rate);
+    }
+
+    function getSlipRate(address indexToken, uint256 size) external view returns(uint256, uint256) {
+        return (slippage.getLongRate(indexToken, size), slippage.getShortRate(indexToken, size));
     }
 }

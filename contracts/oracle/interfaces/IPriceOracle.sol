@@ -14,4 +14,6 @@ interface IPriceOracle {
     function getMaxPrice(address _indexToken) external view returns(uint256);
 
     function getMinPrice(address _indexToken) external view returns(uint256);
+
+    function getMaxMinPriceWithTime(address _indexToken) external view returns(uint256 maxPrice, uint256 minPrice, uint256 lastUpdate);
 }

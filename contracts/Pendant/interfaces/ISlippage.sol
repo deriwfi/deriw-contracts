@@ -103,4 +103,14 @@ interface ISlippage {
     function getMaxPrice(address _indexToken) external view returns(uint256);
 
     function getMinPrice(address _indexToken) external view returns(uint256);
+
+    function getRate(address indexToken, uint256 size, bool isLong) external view returns(uint256);
+
+    function getDecreaseSlipPrice(address indexToken, uint256 size, bool isLong) external view returns(uint256, uint256, uint256);
+
+    function slippageControl() external view returns(address);
+
+    function getLongRate(address indexToken, uint256 size) external view returns(uint256);
+
+    function getShortRate(address indexToken, uint256 size) external view returns(uint256);
 }

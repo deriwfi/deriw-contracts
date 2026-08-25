@@ -39,4 +39,6 @@ interface IPositionRouter {
     function increasePositionKeyToIndex(bytes32 key) external view returns(uint256);
 
     function setErrState(uint256 index, uint8 eState) external;
+
+    function getDecreaseSlippagePrice() external view returns(uint256, uint256, uint256);
 }

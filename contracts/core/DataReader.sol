@@ -689,6 +689,10 @@ contract DataReader is Synchron {
      *        perWithdrawRate cap only (rate-limited, no time/count restriction).
      *      - Non-whitelisted user: delegates to _computeChannelOut for full
      *        (risk buffer + perWithdrawRate + window time + withdrawal count) capping.
+     *      Edge cases (return all zeros / partial):
+     *      - If pool has no liquidity (poolAmount == 0), returns (0, 0, riskBuffer)
+     *        so the caller (MemeData) reverts with "burnGlpAmount err".
+     *      - If totalOutAmount does not exceed risk buffer, returns (0, 0, riskBuffer).
      * @param user The user address to check whitelist status
      * @param indexToken The index token address
      * @param tokenOut The output token address
@@ -698,19 +702,24 @@ contract DataReader is Synchron {
      * @return riskBuffer The risk buffer deducted
      */
     function getUserChannelOutAmount(address user, address indexToken, address tokenOut, uint256 amount) external view returns(uint256 outAmount, uint256 burnGlpAmount, uint256 riskBuffer) {
-        (address pool, address targetToken, uint256 totalOutAmount, uint256 totalGlpSupply, uint256 rb) =
-            _channelOutSetup(indexToken, tokenOut);
+        (address pool, address targetToken, uint256 totalOutAmount, uint256 totalGlpSupply, uint256 rb) = _channelOutSetup(indexToken, tokenOut);
         riskBuffer = rb;
-        if(totalOutAmount <= riskBuffer) return (outAmount, burnGlpAmount, riskBuffer);
+        // Guard against division-by-zero in burnGlpAmount calc (both branches);
+        // also short-circuit when nothing exceeds the risk buffer.
+        uint256 poolAmount = getPoolAmount(targetToken, tokenOut);
+        if(poolAmount == 0 || totalOutAmount <= rb) return (0, 0, rb);
 
+        bool isWhitelist = memeData.isChannelWhitelist(user);
         (uint256 perWithdrawRate, , ) = memeFactory.channelPoolConfig();
-        uint256 maxOut = (totalOutAmount - riskBuffer) * perWithdrawRate / 10000;
+        uint256 maxOut = (totalOutAmount - rb) * perWithdrawRate / 10000;
 
-        if(memeData.isChannelWhitelist(user)) {
+        if(isWhitelist) {
             outAmount = amount > maxOut ? maxOut : amount;
-            burnGlpAmount = outAmount * totalGlpSupply / getPoolAmount(targetToken, tokenOut);
+            burnGlpAmount = outAmount * totalGlpSupply / poolAmount;
         } else {
-            return _computeChannelOut(pool, targetToken, tokenOut, amount, totalOutAmount, totalGlpSupply, riskBuffer);
+            address _token = tokenOut;
+            uint256 _amount = amount;
+            return _computeChannelOut(pool, targetToken, _token, _amount, totalOutAmount, totalGlpSupply, rb);
         }
     }
 

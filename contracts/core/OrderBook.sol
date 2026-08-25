@@ -489,7 +489,6 @@ contract OrderBook is Synchron, ReentrancyGuard, IOStruct, IOrderStruct {
         );
     }
 
-
     function executeDecreaseOrder(address _address, uint256 _orderIndex)  external onlyPositionKeeper nonReentrant {
         DecreaseOrder memory order = decreaseOrders[_address][_orderIndex];
         require(order.account != address(0), "OrderBook: non-existent order");
@@ -503,8 +502,10 @@ contract OrderBook is Synchron, ReentrancyGuard, IOStruct, IOrderStruct {
             !order.isLong,
             true
         );
-
+        
         delete decreaseOrders[_address][_orderIndex];
+
+        temporaryOrderBookDecreasePrice = order.isLong ? IVault(vault).getMinPrice(order.indexToken) : IVault(vault).getMaxPrice(order.indexToken);
 
         uint256 amountOut = IRouter(router).pluginDecreasePosition(
             oneCode,
@@ -517,6 +518,7 @@ contract OrderBook is Synchron, ReentrancyGuard, IOStruct, IOrderStruct {
             address(this)
         );
 
+        delete temporaryOrderBookDecreasePrice;
         TransferAmountData memory tData = _safeTransfer(order.collateralToken, order.account, amountOut);
 
         emit ExecuteDecreaseOrderEvent(
@@ -879,5 +881,22 @@ contract OrderBook is Synchron, ReentrancyGuard, IOStruct, IOrderStruct {
         }
         return (currentPrice, currentPrice, isPriceValid);
     }
+
+    /// @notice Temporary market price cached during limit-order decrease execution, read by SlippageControl
+    /// @dev Limit-order decreases do NOT incur slippage. executeDecreaseOrder writes the current
+    ///      market price here (min price for closing long, max price for closing short) before
+    ///      calling pluginDecreasePosition. SlippageControl.getDecreaseSlipPrice reads this value
+    ///      and, when non-zero, returns (price, price, 0) (rate = 0 means no slippage). It is
+    ///      reset to 0 after the decrease completes to avoid leaking into subsequent decreases.
+    uint256 temporaryOrderBookDecreasePrice;
+
+    /// @notice Returns the cached limit-order decrease price, callable only by SlippageControl
+    /// @dev Access-restricted to prevent external reads from interfering with slippage calculation
+    /// @return The cached limit-order decrease market price, or 0 when no limit decrease is in progress
+    function getTemporaryOrderBookDecreasePrice() external view returns(uint256) {
+        if(msg.sender != ISlippage(IVault(vault).slippage()).slippageControl()) revert("not slippageControl");
+        return temporaryOrderBookDecreasePrice;
+    }
 }
+
 

@@ -222,7 +222,7 @@ contract Slippage is Synchron, IEventStruct {
                 if(rate < muti) {
                     price = price * (muti - rate) / muti;
                 } else {
-                    price = 1;    
+                    revert("exceeds 100%");   
                 }  
             }
         }
@@ -1115,5 +1115,9 @@ contract Slippage is Synchron, IEventStruct {
 
     function getMinPrice(address _indexToken) external view returns(uint256) {
         return priceOracle.getMinPrice(_indexToken);
+    }
+
+    function getDecreaseSlipPrice(address indexToken, uint256 size, bool isLong) external view returns(uint256, uint256, uint256) {
+        return slippageControl.getDecreaseSlipPrice(indexToken, size, isLong);
     }
 }  
