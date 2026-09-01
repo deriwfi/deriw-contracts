@@ -51,4 +51,8 @@ interface IVaultUtils is IEventStruct  {
     ) external returns(bool);
 
     function orderBook() external view returns (address);
+
+    function getLiquidationFeeRate(address _indexToken) external view returns(uint256);
+
+    function getLiquidationFee(address _indexToken, address _collateralToken, uint256 _sizeDelta) external view returns(uint256, uint256);
 }

@@ -44,6 +44,9 @@ contract Slippage is Synchron, IEventStruct {
     mapping(address => uint256) public removeNum;
     mapping(address => mapping(uint256 => RemoveShelves)) removeShelves;
     mapping(address => mapping(address => uint256)) _glpTokenSupply;
+    /// @notice Per-token max leverage (basis points). Per current requirements this holds the
+    ///         liquidation leverage threshold (set via setTokenLeverageConfig), falling back to
+    ///         vault.maxLeverage() when unset (see getTokenMaxLeverage).
     mapping(address => uint256) public tokenMaxLeverage;
  
     struct RemoveShelves {
@@ -136,19 +139,7 @@ contract Slippage is Synchron, IEventStruct {
         orderBook = IOrderBook(_orderBook);
     }
     
-    function setTokenMaxLeverage(LeverageData[] memory eDtata) external onlyGov {
-        uint256 len = eDtata.length;
-        require(len > 0, "length err");
-        for(uint256 i = 0; i < len; i++) {
-            address indexToken = eDtata[i].indexToken;
-            uint256 maxLeverage = eDtata[i].maxLeverage;
-
-            require(maxLeverage >= vault.MIN_LEVERAGE() && maxLeverage <= vault.MAX_LEVERAGE(), "maxLeverage err");
-            tokenMaxLeverage[indexToken] = maxLeverage;
-        }
-
-        emit SetTokenMaxLeverage(eDtata);
-    }
+    function setTokenMaxLeverage(LeverageData[] memory /*eDtata*/) external onlyGov {}
     
     function setTreshold(uint256 threshold_) external onlyGov {
         require(threshold_ > 0, "threshold_ err");
@@ -413,7 +404,7 @@ contract Slippage is Synchron, IEventStruct {
 
         size += pos.collateral;
         _sizeDelta += pos.size;
-        uint256 maxLeverage = getTokenMaxLeverage(indexToken);
+        (uint256 maxLeverage,) = getTokenLeverage(indexToken);
         require(_sizeDelta * baseRate / size <= maxLeverage, "big err");
         
         validateCreate(indexToken);
@@ -675,6 +666,15 @@ contract Slippage is Synchron, IEventStruct {
         return vault.getDelta(_indexToken, size, averagePrice, _isLong, lastIncreasedTime);
     }
 
+    /**
+     * @notice Get the liquidation leverage threshold for a token
+     * @dev    Resolves channel tokens to their underlying index token.
+     *         Per current requirements, tokenMaxLeverage stores the liquidation leverage threshold
+     *         (set via setTokenLeverageConfig), so this function returns the liquidation leverage,
+     *         falling back to vault.maxLeverage() when the token is not configured.
+     * @param  indexToken The token to query (auto-resolved to its underlying index token)
+     * @return The liquidation leverage threshold (falls back to vault.maxLeverage() if unset)
+     */
     function getTokenMaxLeverage(address indexToken) public view returns(uint256) {
         indexToken = dataReader.getIndexToken(indexToken);
         uint256 maxLeverage = tokenMaxLeverage[indexToken] == 0 ? vault.maxLeverage() : tokenMaxLeverage[indexToken];
@@ -1119,5 +1119,72 @@ contract Slippage is Synchron, IEventStruct {
 
     function getDecreaseSlipPrice(address indexToken, uint256 size, bool isLong) external view returns(uint256, uint256, uint256) {
         return slippageControl.getDecreaseSlipPrice(indexToken, size, isLong);
+    }
+
+    // ***********************************************************************************
+
+    /// @notice Per-token open leverage (in basis points), set via setTokenLeverageConfig
+    mapping(address => uint256) public tokenOpenLeverage;
+
+    /**
+     * @notice Per-token leverage configuration
+     * @param indexToken           The underlying index token address
+     * @param openLeverage         The maximum leverage allowed when opening a position
+     * @param liquidationLeverage  The leverage threshold that triggers liquidation
+     */
+    struct TokenLeverageConfig {
+        address indexToken;
+        uint256 openLeverage;
+        uint256 liquidationLeverage;
+    }
+
+    /// @notice Event emitted when per-token open/liquidation leverage config is set (per token, using resolved index token)
+    event SetTokenLeverageConfig(address indexed indexToken, uint256 openLeverage, uint256 liquidationLeverage);
+
+    /**
+     * @notice Batch set per-token open leverage and liquidation leverage
+     * @dev    Only callable by governance. Each input indexToken is resolved to its underlying
+     *         index token via dataReader before storing, and a per-token event is emitted.
+     *         - openLeverage must satisfy: MIN_LEVERAGE <= openLeverage <= MAX_LEVERAGE
+     *         - liquidationLeverage must be >= openLeverage
+     *         - liquidationLeverage is stored in tokenMaxLeverage
+     *         - openLeverage is stored in tokenOpenLeverage
+     * @param eDtata Array of TokenLeverageConfig
+     */
+    function setTokenLeverageConfig(TokenLeverageConfig[] memory eDtata) external onlyGov {
+        uint256 len = eDtata.length;
+        if(len == 0) revert();
+        for(uint256 i = 0; i < len; i++) {
+            address indexToken = dataReader.getIndexToken(eDtata[i].indexToken);
+            uint256 openLeverage = eDtata[i].openLeverage;
+            uint256 liquidationLeverage = eDtata[i].liquidationLeverage;
+
+            if(openLeverage < vault.MIN_LEVERAGE() || openLeverage > vault.MAX_LEVERAGE() || liquidationLeverage < openLeverage) revert("leverage err");
+            tokenOpenLeverage[indexToken] = openLeverage;
+            tokenMaxLeverage[indexToken] = liquidationLeverage;
+
+            emit SetTokenLeverageConfig(indexToken, openLeverage, liquidationLeverage);
+        }
+    }
+
+    /**
+     * @notice Get the open leverage and liquidation leverage for a token
+     * @dev    Resolves channel tokens to their underlying index token before reading.
+     *         - liquidationLeverage comes from getTokenMaxLeverage (tokenMaxLeverage, with
+     *           fallback to vault.maxLeverage() when unset).
+     *         - openLeverage comes from tokenOpenLeverage; when unset it defaults to
+     *           half of the liquidation leverage (liquidationLeverage / 2).
+     * @param  _indexToken The token to query (auto-resolved to its underlying index token)
+     * @return openLeverage         The effective open leverage (defaults to liquidationLeverage / 2 if unset)
+     * @return liquidationLeverage  The effective liquidation leverage (falls back to vault.maxLeverage() if unset)
+     */
+    function getTokenLeverage(address _indexToken) public view returns(uint256, uint256) {
+        address indexToken = dataReader.getIndexToken(_indexToken);
+        uint256 openLeverage = tokenOpenLeverage[indexToken];
+        uint256 liquidationLeverage = getTokenMaxLeverage(indexToken);
+        if (openLeverage == 0) openLeverage = liquidationLeverage / 2;
+        if(openLeverage < vault.MIN_LEVERAGE()) revert("leverage err");
+        
+        return (openLeverage, liquidationLeverage);
     }
 }  

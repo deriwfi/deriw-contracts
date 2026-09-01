@@ -102,8 +102,8 @@ contract Vault is Synchron, ReentrancyGuard, IEventStruct {
     event DecreaseReservedAmount(address _indexToken, address _collateralToken, uint256 amount);
     event IncreaseGuaranteedUsd(address _indexToken, address _collateralToken, uint256 amount);
     event DecreaseGuaranteedUsd(address _indexToken, address _collateralToken, uint256 amount);
-    event LiquidationFeeUsd(address token, uint256 liquidationFeeUsd, uint256 tokenAmount);
-    event LiquidatePositionFee(address token, uint256 feeUsd, uint256 feeTokens);
+    event LiquidationFeeUsd(address token, uint256 liquidationFeeUsd, uint256 tokenAmount, address indexToken);
+    event LiquidatePositionFee(address token, uint256 feeUsd, uint256 feeTokens, address indexToken);
 
     event UpdatePosition(
         bytes32 key,
@@ -622,18 +622,19 @@ contract Vault is Synchron, ReentrancyGuard, IEventStruct {
         address _indexToken, 
         bool _isLong, 
         address _feeReceiver
-    ) external  nonReentrant {
+    ) external nonReentrant {
         _liquidate();
 
         bytes32 key = getPositionKey(_account, _collateralToken, _indexToken, _isLong);
         Position memory position = positions[key];
-        _validate(position.size > 0, 35);
+        if(_feeReceiver == address(0) || _feeReceiver == address(this) || position.size == 0) revert();
     
         (uint256 liquidationState, uint256 marginFees) = validateLiquidation(_account, _collateralToken, _indexToken, _isLong, false);
         _validate(liquidationState != 0, 36);
         {
-            address addr = _account;
             if (liquidationState == 2) {
+                liquidationFeeReceiver = _feeReceiver;
+                address addr = _account;
                 // max leverage exceeded but there is collateral remaining after deducting losses so decreasePosition instead
                 _decreasePosition(4, phase.typeCode(4), addr, _collateralToken, _indexToken, 0, position.size, _isLong, addr);
                 includeAmmPrice = true;
@@ -647,10 +648,24 @@ contract Vault is Synchron, ReentrancyGuard, IEventStruct {
         _updateGlobalAveragePrice(_account, _collateralToken, _indexToken, markPrice, position.size, _isLong);
 
         {
-            uint256 feeTokens = usdToTokenMin(_collateralToken, marginFees);
+            marginFees = position.collateral > marginFees ? marginFees : position.collateral;
+            if(marginFees > 0) {
+                uint256 feeTokens = usdToTokenMin(_collateralToken, marginFees);
 
-            _transferFee(3, phase.typeCode(3), key, _collateralToken, _account, feeTokens, _indexToken);
-            emit LiquidatePositionFee(_collateralToken, marginFees, feeTokens);
+                _transferFee(3, phase.typeCode(3), key, _collateralToken, _account, feeTokens, _indexToken);
+                emit LiquidatePositionFee(_collateralToken, marginFees, feeTokens, _indexToken);
+            }
+
+            {
+                uint256 remainingCollateral = position.collateral - marginFees;
+                (uint256 _liquidationFeeUsd,) = vaultUtils.getLiquidationFee(_indexToken, _collateralToken, position.size);
+                _liquidationFeeUsd = remainingCollateral > _liquidationFeeUsd ? _liquidationFeeUsd : remainingCollateral;
+                if(_liquidationFeeUsd > 0) {
+                    _liquidatePositionFor(_indexToken, key, _collateralToken, _feeReceiver, _liquidationFeeUsd);
+                }
+                remainingCollateral -= _liquidationFeeUsd;
+                _increasePoolAmount(_indexToken, _collateralToken, usdToTokenMin(_collateralToken, remainingCollateral));
+            }
 
             _decreaseReservedAmount(_indexToken, _collateralToken, position.reserveAmount);
             if (_isLong) {
@@ -670,49 +685,20 @@ contract Vault is Synchron, ReentrancyGuard, IEventStruct {
                 markPrice,
                 position.averagePrice
             );
-
-            address _cToken = _collateralToken;
             emit LiquidatePosition(lEvent);
-
-            if (marginFees < position.collateral) {
-                uint256 remainingCollateral = position.collateral - marginFees;
-                _increasePoolAmount(_indexToken, _cToken, usdToTokenMin(_cToken, remainingCollateral));
-            }
 
             if (!_isLong) {
                 _decreaseGlobalShortSize(_account, _indexToken, position.size);
             } else {
                 _decreaseGlobalLongSize(_account, _indexToken, position.size);
             }
-
-            delete positions[key];
             
-
-            _liquidatePosition(_indexToken, key, _cToken, _feeReceiver);
+            delete positions[key];
+            includeAmmPrice = true;
         }
     }
 
-    function _liquidatePosition(address _indexToken, bytes32 _key, address _collateralToken, address _feeReceiver) internal {
-        // pay the fee receiver using the pool, we assume that in general the liquidated amount should be sufficient to cover
-        // the liquidation fees
-        _decreasePoolAmount(_indexToken, _collateralToken, usdToTokenMin(_collateralToken, liquidationFeeUsd));
-        uint256 tokenAmount = usdToTokenMin(_collateralToken, liquidationFeeUsd);
-
-        TransferAmountData memory tData = _transferOut(_indexToken, _collateralToken, tokenAmount, _feeReceiver);
-
-        emit LiquidatePositionEvent(
-            _key, 
-            address(this), 
-            _feeReceiver, 
-            tokenAmount, 
-            tData.beforeAmount, 
-            tData.afterAmount, 
-            tData.beforeValue, 
-            tData.afterValue
-        );
-        emit LiquidationFeeUsd(_collateralToken, liquidationFeeUsd, tokenAmount);
-        includeAmmPrice = true;
-    }
+    function _liquidatePosition(address /*_indexToken*/, bytes32 /*_key*/, address /*_collateralToken*/, address /*_feeReceiver*/) internal {}
 
     // validateLiquidation returns (state, fees)
     function validateLiquidation(address _account, address _collateralToken, address _indexToken, bool _isLong, bool _raise)  public view returns (uint256, uint256) {
@@ -959,6 +945,13 @@ contract Vault is Synchron, ReentrancyGuard, IEventStruct {
         );
 
         _transferFee(rtl.cType, rtl._key, key, rtl._collateralToken, rtl._account, feeTokens, rtl._indexToken);
+        if(rtl.cType == 4) {
+            (uint256 _liquidationFeeUsd,) = vaultUtils.getLiquidationFee(rtl._indexToken, rtl._collateralToken, position.size);
+            _liquidatePositionFor(rtl._indexToken, key, rtl._collateralToken, liquidationFeeReceiver, _liquidationFeeUsd);
+            delete liquidationFeeReceiver;
+            fee += _liquidationFeeUsd;
+        }
+
         bool hasProfit;
         uint256 adjustedDelta;
 
@@ -984,7 +977,6 @@ contract Vault is Synchron, ReentrancyGuard, IEventStruct {
 
             uint256 tokenAmount = usdToTokenMin(rtl._collateralToken, adjustedDelta);
             _decreasePoolAmount(rtl._indexToken, rtl._collateralToken, tokenAmount);
-            
         }
 
         if (!hasProfit && adjustedDelta > 0) {
@@ -1079,7 +1071,7 @@ contract Vault is Synchron, ReentrancyGuard, IEventStruct {
         maxGlobalLongSizes[_token] = _amount;
     }
 
-    uint256 public constant MAX_LEVERAGE = 200 * 10000; // 200x;
+    uint256 public constant MAX_LEVERAGE = 1000 * 10000; // 1000x;
 
     // *******************************************************************
     function dataReader() public view returns(IDataReader) {
@@ -1143,4 +1135,24 @@ contract Vault is Synchron, ReentrancyGuard, IEventStruct {
             globalShortAveragePrices[_indexToken] = _globalShortAveragePrice;
         }
     }
+
+    address liquidationFeeReceiver;
+
+    function _liquidatePositionFor(address _indexToken, bytes32 _key, address _collateralToken, address _feeReceiver, uint256 _liquidationFeeUsd) internal {
+        uint256 tokenAmount = usdToTokenMin(_collateralToken, _liquidationFeeUsd);
+        TransferAmountData memory tData = _transferOut(_indexToken, _collateralToken, tokenAmount, _feeReceiver);
+
+        emit LiquidatePositionEvent(
+            _key, 
+            address(this), 
+            _feeReceiver, 
+            tokenAmount, 
+            tData.beforeAmount, 
+            tData.afterAmount, 
+            tData.beforeValue, 
+            tData.afterValue
+        );
+        emit LiquidationFeeUsd(_collateralToken, _liquidationFeeUsd, tokenAmount, _indexToken);
+    }
+
 }

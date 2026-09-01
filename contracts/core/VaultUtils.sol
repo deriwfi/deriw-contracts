@@ -328,9 +328,7 @@ contract VaultUtils is Synchron, IEventStruct {
         Position memory position,
         ValidateLiquidationData memory vData
     ) internal view returns (uint256, uint256) {
-        IVault _vault = vault;
-        (bool hasProfit, uint256 delta) = _vault.getDelta(vData.indexToken, position.size, position.averagePrice, vData.isLong, position.lastIncreasedTime);
-
+        (bool hasProfit, uint256 delta) = vault.getDelta(vData.indexToken, position.size, position.averagePrice, vData.isLong, position.lastIncreasedTime);
         uint256 marginFees = getPositionFee(vData.account, vData.collateralToken, vData.indexToken, vData.isLong, position.size);
 
         if (!hasProfit && position.collateral < delta) {
@@ -349,12 +347,13 @@ contract VaultUtils is Synchron, IEventStruct {
             return (1, remainingCollateral);
         }
 
-        if (remainingCollateral < marginFees + _vault.liquidationFeeUsd()) {
+        (uint256 liquidationFee,) = getLiquidationFee(vData.indexToken, vData.collateralToken, position.size);
+        if (remainingCollateral < marginFees + liquidationFee) {
             if (vData.raise) { revert("Vault: liquidation fees exceed collateral"); }
             return (1, marginFees);
         }
 
-        uint256 maxLeverage = slippage.getTokenMaxLeverage(vData.indexToken);
+        (,uint256 maxLeverage) = slippage.getTokenLeverage(vData.indexToken);
         if (remainingCollateral * maxLeverage < position.size * BASIS_POINTS_DIVISOR) {
             if (vData.raise) { revert("Vault: maxLeverage exceeded"); }
             return (2, marginFees);
@@ -577,4 +576,53 @@ contract VaultUtils is Synchron, IEventStruct {
         }
     }
 
+    // **************************************************************
+    event SetLiquidationFeeRate(address indexed indexToken, uint256 liquidationFeeRate);
+    /// @notice Per-token liquidation fee ratio in basis points (must be <= 100, i.e. <= 1%), set by governance
+    mapping(address => uint256) liquidationFeeRate;
+    /**
+     * @notice Set the liquidation fee ratio (in basis points) for a token
+     * @dev    Only callable by governance. Resolves channel tokens to their underlying index token.
+     *         Value must be less than or equal to 100 basis points (1%).
+     * @param _indexToken The token to configure (auto-resolved to its underlying index token)
+     * @param _liquidationFeeRate The new liquidation fee ratio in basis points
+     */
+    function setLiquidationFeeRate(address _indexToken, uint256 _liquidationFeeRate) external onlyGov() {
+        _indexToken = IDataReader(slippage.dataReader()).getIndexToken(_indexToken);
+        require(_indexToken != address(0) && _liquidationFeeRate <= 100, "rate err");
+        liquidationFeeRate[_indexToken] = _liquidationFeeRate;
+
+        emit SetLiquidationFeeRate(_indexToken, _liquidationFeeRate);
+    }
+
+    /**
+     * @notice Get the liquidation fee rate (in basis points) for a token
+     * @dev    Resolves channel tokens to their underlying index token before reading.
+     *         Defaults to 10 basis points (0.1%) when the token has not been configured.
+     * @param  _indexToken The token to query (auto-resolved to its underlying index token)
+     * @return The liquidation fee rate in basis points (default 10 if unset)
+     */
+    function getLiquidationFeeRate(address _indexToken) public view returns(uint256) {
+        _indexToken = IDataReader(slippage.dataReader()).getIndexToken(_indexToken);
+        uint256 _liquidationFeeRate = liquidationFeeRate[_indexToken];
+        return _liquidationFeeRate == 0 ? 10 : _liquidationFeeRate;
+    }
+
+    /**
+     * @notice Get the liquidation fee (in USD) for a position of a given size
+     * @dev    Fee = sizeDelta * liquidationFeeRate / BASIS_POINTS_DIVISOR.
+     *         The result is the larger of this calculated fee and the vault's base
+     *         liquidation fee (vault.liquidationFeeUsd()), ensuring a minimum fee.
+     * @param  _indexToken The index token of the position (auto-resolved to its underlying index token)
+     * @param  _sizeDelta  The position size (in USD) used to compute the liquidation fee
+     * @return The liquidation fee in USD (max of computed fee and base fee)
+     */
+    function getLiquidationFee(address _indexToken, address _collateralToken, uint256 _sizeDelta) public view returns(uint256, uint256) {
+        uint256 _liquidationFeeRate = getLiquidationFeeRate(_indexToken);
+        uint256 _fee = _sizeDelta * _liquidationFeeRate / BASIS_POINTS_DIVISOR;
+        
+        uint256 _baseFee = vault.liquidationFeeUsd();
+        _fee = _fee > _baseFee ? _fee : _baseFee;
+        return (_fee, vault.usdToTokenMin(_collateralToken, _fee));
+    }
 }

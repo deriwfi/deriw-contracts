@@ -92,6 +92,10 @@ interface ISlippage {
         bool _isLong
     ) external view returns (uint256, uint256);
 
+    /// @notice Returns the liquidation leverage threshold for a token
+    /// @dev    Per current design, tokenMaxLeverage stores the liquidation leverage
+    ///         (set via setTokenLeverageConfig), falling back to vault.maxLeverage() when unset.
+    /// @param indexToken The token to query (auto-resolved to its underlying index token)
     function getTokenMaxLeverage(address indexToken) external view returns(uint256);
 
     function dataReader() external view returns(address);
@@ -113,4 +117,11 @@ interface ISlippage {
     function getLongRate(address indexToken, uint256 size) external view returns(uint256);
 
     function getShortRate(address indexToken, uint256 size) external view returns(uint256);
+
+    /// @notice Returns the (openLeverage, liquidationLeverage) for a token
+    /// @dev    openLeverage defaults to liquidationLeverage / 2 when unset.
+    /// @param  _indexToken The token to query (auto-resolved to its underlying index token)
+    /// @return openLeverage         The effective open leverage (defaults to liquidationLeverage / 2 if unset)
+    /// @return liquidationLeverage  The effective liquidation leverage (falls back to vault.maxLeverage() if unset)
+    function getTokenLeverage(address _indexToken) external view returns(uint256, uint256);
 }
