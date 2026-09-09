@@ -328,7 +328,12 @@ contract VaultUtils is Synchron, IEventStruct {
         Position memory position,
         ValidateLiquidationData memory vData
     ) internal view returns (uint256, uint256) {
-        (bool hasProfit, uint256 delta) = vault.getDelta(vData.indexToken, position.size, position.averagePrice, vData.isLong, position.lastIncreasedTime);
+        // Price the health check WITHOUT the request-scoped execution cache: when this runs
+        // inside a decrease request (e.g. validating the REMAINING position after a partial
+        // decrease), the active cache holds the execution price of the closed sizeDelta and must
+        // not be reused to evaluate the remaining exposure. Outside a request the fallback path
+        // is identical to the previous behaviour. Called directly on phase (no Vault wrapper).
+        (bool hasProfit, uint256 delta) = phase.getDeltaForLiquidation(vData.indexToken, position.size, position.averagePrice, vData.isLong, position.lastIncreasedTime);
         uint256 marginFees = getPositionFee(vData.account, vData.collateralToken, vData.indexToken, vData.isLong, position.size);
 
         if (!hasProfit && position.collateral < delta) {

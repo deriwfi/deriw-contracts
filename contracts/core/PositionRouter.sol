@@ -260,7 +260,7 @@ contract PositionRouter is Synchron, ReentrancyGuard, ITransferAmountData {
     }
 
     modifier onlyPositionKeeper() {
-        require(isPositionKeeper[msg.sender], "403");
+        require(isPositionKeeper[msg.sender] || msg.sender == address(this), "403");
         _;
     }
 

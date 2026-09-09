@@ -934,6 +934,9 @@ contract Vault is Synchron, ReentrancyGuard, IEventStruct {
         return positions[key];
     }    
 
+    /// @notice Reduce collateral for a (possibly partial) decrease, settling PnL at the
+    ///         sizeDelta execution price cached in dData.price via Phase.getDeltaFor instead of
+    ///         re-pricing the whole position size (DER-08).
     function _reduceCollateral(
         RedCollateral memory rtl
     ) private returns (uint256, uint256) {
@@ -955,14 +958,17 @@ contract Vault is Synchron, ReentrancyGuard, IEventStruct {
         bool hasProfit;
         uint256 adjustedDelta;
 
-        // scope variables to avoid stack too deep errors
+        // DER-08: settle the partial decrease at THIS execution price (dData.price, computed
+        // from sizeDelta by the caller) instead of re-pricing the whole position size, whose
+        // heavier slippage would settle the closed size at the wrong price.
         {
-            (bool _hasProfit, uint256 delta) = getDelta(
+            (bool _hasProfit, uint256 delta) = phase.getDeltaFor(
                 rtl._indexToken, 
                 position.size, 
                 position.averagePrice, 
                 rtl._isLong, 
-                position.lastIncreasedTime
+                position.lastIncreasedTime,
+                dData.price
             );
             hasProfit = _hasProfit;
             // get the proportional change in pnl
@@ -1008,7 +1014,7 @@ contract Vault is Synchron, ReentrancyGuard, IEventStruct {
         // if the usdOut is more than the fee then deduct the fee from the usdOut directly
         // else deduct the fee from the position's collateral
         uint256 usdOutAfterFee = usdOut;
-        if (usdOut > fee) {
+        if (usdOut >= fee) {
             usdOutAfterFee = usdOut - fee;
         } else {
             if(position.collateral < fee) {

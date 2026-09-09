@@ -240,24 +240,14 @@ contract Slippage is Synchron, IEventStruct {
         return finalSlip;
     }
 
-    function getPoolAmountSizeThreshold(address indexToken, bool isLong) public view returns(uint256) {
-        uint256 size = getPoolAmountSize(indexToken, isLong);
+    /// @notice Deprecated legacy query: always returns 0 (implementation removed).
+    /// @dev Kept only to preserve the external ABI/selector; do NOT restore it into active
+    ///      pricing. If removed later, do NOT delete the underlying storage variables.
+    function getPoolAmountSizeThreshold(address /*indexToken*/, bool /*isLong*/) public view returns(uint256) {}
 
-        return size * getThresholdValue(indexToken) / baseRate;
-    }
-
-    function getPoolAmountSize(address indexToken, bool isLong) public view returns(uint256) {
-        uint256 amount = dataReader.getUsePoolAmounts(indexToken, USDT);
-        uint256 deci = 10 ** IERC20Metadata(USDT).decimals();
-        uint256 price;
-        if(isLong) {
-            price = vault.getMaxPrice(USDT);
-        } else {
-            price = vault.getMinPrice(USDT); 
-        }
-
-        return amount * price / deci;
-    }
+    /// @notice Deprecated legacy query: always returns 0 (implementation removed).
+    /// @dev Only the deprecated getPoolAmountSizeThreshold used this; retained for ABI compatibility.
+    function getPoolAmountSize(address /*indexToken*/, bool /*isLong*/) public view returns(uint256) {}
 
     function getLongNetAmount(address indexToken, uint256 size) public view returns(uint256, uint256) {
         (
@@ -526,7 +516,9 @@ contract Slippage is Synchron, IEventStruct {
         uint256 _sizeDelta,
         bool _isLong
     ) external view returns (uint256, uint256) {
-        int256 realisedPnl = getRealisedPnl(_account,_collateralToken, _indexToken, _sizeDelta, _isLong);
+        // DER-08: realised PnL must share the SAME execution price as the global-average update
+        // below (Vault passes dData.price as _nextPrice), not a full-position re-priced quote.
+        int256 realisedPnl = _getRealisedPnl(_account, _collateralToken, _indexToken, _sizeDelta, _isLong, _nextPrice);
 
         uint256 averagePrice = _isLong ? vault.globalLongAveragePrices(_indexToken) : vault.globalShortAveragePrices(_indexToken);
         uint256 priceDelta = averagePrice > _nextPrice ? averagePrice - _nextPrice : _nextPrice - averagePrice;
@@ -561,6 +553,8 @@ contract Slippage is Synchron, IEventStruct {
         return (nextSize, nextAveragePrice);
     }
 
+    /// @notice Realised PnL of a partial close, priced at the sizeDelta execution price so the
+    ///         public view mirrors on-chain accounting (DER-08).
     function getRealisedPnl(
         address _account,
         address _collateralToken,
@@ -568,12 +562,30 @@ contract Slippage is Synchron, IEventStruct {
         uint256 _sizeDelta,
         bool _isLong
     ) public view returns (int256) {
-        IVault _vault = vault;
-        (uint256 size, /*uint256 collateral*/, uint256 averagePrice, , , , , uint256 lastIncreasedTime) = _vault.getPosition(_account, _collateralToken, _indexToken, _isLong);
+        (,uint256 sPrice,) = slippageControl.getDecreaseSlipPrice(_indexToken, _sizeDelta, _isLong);
+        return _getRealisedPnl(_account, _collateralToken, _indexToken, _sizeDelta, _isLong, sPrice);
+    }
 
-        (bool hasProfit, uint256 delta) = _vault.getDelta(_indexToken, size, averagePrice, _isLong, lastIncreasedTime);
-        // get the proportional change in pnl
-        uint256 adjustedDelta = _sizeDelta * delta / size;
+    /// @notice Realised PnL of a partial close priced at an explicitly supplied execution price.
+    /// @dev DER-08: internal accounting passes _nextPrice (= dData.price from Vault), so PnL and
+    ///      the global average-price update share one execution price instead of mixing a
+    ///      full-position quote with a sizeDelta quote.
+    function _getRealisedPnl(
+        address _account,
+        address _collateralToken,
+        address _indexToken,
+        uint256 _sizeDelta,
+        bool _isLong,
+        uint256 _price
+    ) internal view returns (int256) {
+        IVault _vault = vault;
+        (, , uint256 averagePrice, , , , , ) = _vault.getPosition(_account, _collateralToken, _indexToken, _isLong);
+        if(averagePrice == 0) revert("_averagePrice err");
+
+        uint256 priceDelta = averagePrice > _price ? averagePrice - _price : _price - averagePrice;
+        bool hasProfit = _isLong ? _price > averagePrice : averagePrice > _price;
+
+        uint256 adjustedDelta = _sizeDelta * priceDelta / averagePrice;
         require(adjustedDelta < MAX_INT256, "ShortsTracker: overflow");
         return hasProfit ? int256(adjustedDelta) : -int256(adjustedDelta);
     }
@@ -849,58 +861,18 @@ contract Slippage is Synchron, IEventStruct {
         uint256 memberTokenTargetID, 
         uint256 thresholdValue
     );
-    
-    /**
-     * @notice Set a custom threshold value for an index token
-     * @dev Only callable by governance. Threshold is stored per pool target token:
-     *      _belongTo == 2 (member token) → setTokenThresholdValue[pair][memberId]
-     *      _belongTo == 1 (single token) → singleTokenThresholdValue[pair][token]
-     *      Other classifications revert.
-     * @param _indexToken The token address (will be resolved via dataReader)
-     * @param _thresholdValue The threshold in basis points (0 < value <= baseRate = 10000)
-     */
-    function setIndexTokenThresholdValue(address _indexToken, uint256 _thresholdValue) external onlyGov() {
-        if(_thresholdValue > baseRate || _thresholdValue == 0) revert("_thresholdValue err");
 
-        (address _poolTargetToken, uint256 _memberTokenTargetID,,uint8 _belongTo) = dataReader.getTokenInfo(_indexToken);
-        if(_belongTo == 2) {
-            setTokenThresholdValue[_poolTargetToken][_memberTokenTargetID] = _thresholdValue;
-        } else if(_belongTo == 1) {
-            singleTokenThresholdValue[_poolTargetToken][_indexToken] = _thresholdValue;
-        } else {
-            revert("_belongTo err");
-        }
+    /// @notice Deprecated legacy setter: no-op (implementation removed).
+    /// @dev Retained only to preserve the external ABI/selector and the onlyGov guard; it no longer
+    ///      writes setTokenThresholdValue / singleTokenThresholdValue nor emits SetIndexTokenThresholdValue.
+    ///      The mappings are kept solely for storage-layout compatibility (do NOT delete them).
+    function setIndexTokenThresholdValue(address /*_indexToken*/, uint256 /*_thresholdValue*/) external onlyGov() {}
 
-        emit SetIndexTokenThresholdValue(_indexToken, _poolTargetToken, _memberTokenTargetID, _thresholdValue);
-    }
-
-    /**
-     * @notice Get the effective threshold value for a token
-     * @dev Resolution order:
-     *      1. If token is a channel mapped token (indexToken != _indexToken):
-     *         a. Check custom threshold via dataReader → return if set
-     *         b. Fallback to _getThresholdValue with the same _belongTo
-     *      2. Otherwise, resolve via coinData.getTokenInfo and call _getThresholdValue
-     * @param _indexToken The token address (channel token or regular token)
-     * @return uint256 The resolved threshold value in basis points
-     */
-    function getThresholdValue(address _indexToken) public view returns(uint256) {
-        address indexToken = dataReader.getIndexToken(_indexToken);
-
-        (address _poolTargetToken, uint256 _memberTokenTargetID,,uint8 _belongTo) = coinData.getTokenInfo(indexToken);        
-        if(indexToken != _indexToken) {
-            address _poolToken = dataReader.getTargetIndexToken(_indexToken);
-            if(_belongTo == 2) {
-                uint256 _thresholdValue = setTokenThresholdValue[_poolToken][_memberTokenTargetID];
-                return _thresholdValue == 0 ? _getThresholdValue(indexToken, _poolTargetToken, _memberTokenTargetID, _belongTo) : _thresholdValue;
-            } else if(_belongTo == 1) {
-                uint256 _thresholdValue = singleTokenThresholdValue[_poolToken][_indexToken];
-                return _thresholdValue == 0 ? _getThresholdValue(indexToken, _poolTargetToken, _memberTokenTargetID, _belongTo) : _thresholdValue;
-            }
-        }
-
-        return _getThresholdValue(indexToken, _poolTargetToken, _memberTokenTargetID, _belongTo);
-    }
+    /// @notice Deprecated legacy query: always returns 0 (implementation removed).
+    /// @dev No execution path reads threshold values anymore (slip pricing lives in
+    ///      SlippageControl). Retained for ABI compatibility; do not restore without
+    ///      re-reviewing the setter semantics (setIndexTokenThresholdValue writes are unread).
+    function getThresholdValue(address /*_indexToken*/) public view returns(uint256) {}
 
     // ************************************Channel mode***********************************************
 
@@ -980,33 +952,6 @@ contract Slippage is Synchron, IEventStruct {
             if (f > 0) return f;
         }
         return factor;
-    }
-
-    /**
-     * @notice Resolve the threshold value for a given token based on its classification
-     * @dev Fallback chain (category → check custom → default):
-     *      1. _belongTo == 2 (member token): setTokenThresholdValue[pool][memberID] → threshold
-     *      2. _belongTo == 1 (single token): singleTokenThresholdValue[pool][token] → threshold
-     *      3. _belongTo == 0 (legacy token): always returns global threshold
-     *      4. Other: returns 0 (unregistered token)
-     * @param _indexToken The token to query (resolved beforehand)
-     * @param _poolTargetToken The pool's target token address
-     * @param _memberTokenTargetID The member token target ID (for _belongTo == 2)
-     * @param _belongTo Token classification: 0=legacy, 1=single, 2=member
-     * @return uint256 The resolved threshold value in basis points
-     */
-    function _getThresholdValue(address _indexToken, address _poolTargetToken, uint256 _memberTokenTargetID, uint8 _belongTo) internal view returns(uint256) {
-        if(_belongTo == 2) {
-            uint256 _setTokenThresholdValue = setTokenThresholdValue[_poolTargetToken][_memberTokenTargetID];
-            return _setTokenThresholdValue == 0 ? threshold : _setTokenThresholdValue;
-        } else if(_belongTo == 1) {
-            uint256 _singleTokenThresholdValue = singleTokenThresholdValue[_poolTargetToken][_indexToken];
-            return _singleTokenThresholdValue == 0 ? threshold : _singleTokenThresholdValue;
-        } else if(_belongTo == 0) {
-            return threshold;
-        } else {
-            return 0;
-        }
     }
 
     /**
@@ -1119,6 +1064,12 @@ contract Slippage is Synchron, IEventStruct {
 
     function getDecreaseSlipPrice(address indexToken, uint256 size, bool isLong) external view returns(uint256, uint256, uint256) {
         return slippageControl.getDecreaseSlipPrice(indexToken, size, isLong);
+    }
+
+    /// @notice Mark-to-market decrease price that skips request-scoped execution caches.
+    /// @dev Used for health checks of the remaining position after a partial decrease.
+    function getLiquidationPrice(address indexToken, uint256 size, bool isLong) external view returns(uint256, uint256, uint256) {
+        return slippageControl.getLiquidationPrice(indexToken, size, isLong);
     }
 
     // ***********************************************************************************

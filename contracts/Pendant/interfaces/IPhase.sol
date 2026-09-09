@@ -50,6 +50,28 @@ interface IPhase is IPhaseStruct {
         uint256 _lastIncreasedTime
     ) external view returns (bool, uint256);
 
+    /// @notice Delta computed against an externally supplied execution price instead of a
+    ///         re-priced quote for the given size.
+    /// @dev Used by Vault for partial-decrease PnL accounting so that realised PnL and the
+    ///      global average-price update share the same sizeDelta execution price (DER-08).
+    function getDeltaFor(
+        address _indexToken, 
+        uint256 _size, 
+        uint256 _averagePrice, 
+        bool _isLong, 
+        uint256 _lastIncreasedTime,
+        uint256 price
+    ) external view returns (bool, uint256);
+
+    /// @notice Delta for liquidation/health checks priced without request-scoped caches.
+    function getDeltaForLiquidation(
+        address _indexToken, 
+        uint256 _size, 
+        uint256 _averagePrice, 
+        bool _isLong, 
+        uint256 _lastIncreasedTime
+    ) external view returns (bool, uint256);
+
     function validateTokens(address _collateralToken, address _indexToken) external view;
 
     function getValue(address user, address indexToken, bool isLong) external view returns(uint256, uint256);

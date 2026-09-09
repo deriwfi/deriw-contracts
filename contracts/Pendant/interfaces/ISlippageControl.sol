@@ -20,6 +20,10 @@ interface ISlippageControl {
         external view returns(int256 skewAdjustment);
 
     function getDecreaseSlipPrice(address indexToken, uint256 size, bool isLong) external view returns(uint256, uint256, uint256);
+
+    /// @notice Mark-to-market decrease price that skips request-scoped execution caches.
+    /// @dev Used for health checks of the remaining position after a partial decrease.
+    function getLiquidationPrice(address indexToken, uint256 size, bool isLong) external view returns(uint256, uint256, uint256);
     
     // ============ Public State Getters ============
 

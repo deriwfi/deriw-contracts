@@ -2,9 +2,8 @@
 pragma solidity ^0.8.0;
 
 import "./Synchron.sol";
-import "../libraries/utils/ReentrancyGuard.sol";
 
-contract Proxy is Synchron, ReentrancyGuard{
+contract Proxy is Synchron {
     event NewImplementation(address oldImplementation, address newImplementation);
     event NewAdmin(address oldAdmin, address newAdmin);
 
@@ -54,7 +53,7 @@ contract Proxy is Synchron, ReentrancyGuard{
         }
     }
 
-    function withdrawETH(address account, uint256 amount) external nonReentrant() {
+    function withdrawETH(address account, uint256 amount) external {
         require(admin == msg.sender,"KnowhereProxy:not permit");
         require(account != address(0), "account err");
         require(address(this).balance >= amount, "amount err");

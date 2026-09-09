@@ -587,7 +587,7 @@ contract Phase is Synchron, IStruct, IPhaseStruct {
         bool _isLong, 
         uint256 _lastIncreasedTime,
         uint256 price
-    ) external view returns (bool, uint256) {
+    ) external pure returns (bool, uint256) {
         return _getDelta(_indexToken, _size, _averagePrice, _isLong, _lastIncreasedTime, price);
     }
 
@@ -603,14 +603,31 @@ contract Phase is Synchron, IStruct, IPhaseStruct {
         return _getDelta(_indexToken, _size, _averagePrice, _isLong, _lastIncreasedTime, sPrice);
     }
 
-    function _getDelta(
+    /// @notice Delta for liquidation / health checks, priced WITHOUT request-scoped execution
+    ///         caches (see ISlippage.getLiquidationPrice). A partial decrease executes under a
+    ///         request cache keyed to the closed sizeDelta, so reusing that price to evaluate the
+    ///         REMAINING position would price the remaining exposure at the wrong size. This
+    ///         variant recomputes the mark price against the given size instead.
+    function getDeltaForLiquidation(
         address _indexToken, 
         uint256 _size, 
         uint256 _averagePrice, 
         bool _isLong, 
-        uint256 _lastIncreasedTime,
+        uint256 _lastIncreasedTime
+    ) external view returns (bool, uint256) {
+        (,uint256 sPrice,) = ISlippage(vault.slippage()).getLiquidationPrice(_indexToken, _size, _isLong);
+
+        return _getDelta(_indexToken, _size, _averagePrice, _isLong, _lastIncreasedTime, sPrice);
+    }
+
+    function _getDelta(
+        address /*_indexToken*/, 
+        uint256 _size, 
+        uint256 _averagePrice, 
+        bool _isLong, 
+        uint256 /*_lastIncreasedTime*/,
         uint256 price
-    ) internal view returns (bool, uint256) {
+    ) internal pure returns (bool, uint256) {
         if(_averagePrice == 0) revert("_averagePrice err");
 
         uint256 priceDelta = _averagePrice > price ? _averagePrice - price : price - _averagePrice;
@@ -621,14 +638,6 @@ contract Phase is Synchron, IStruct, IPhaseStruct {
             hasProfit = price > _averagePrice;
         } else {
             hasProfit = _averagePrice > price;
-        }
-
-        // if the minProfitTime has passed then there will be no min profit threshold
-        // the min profit threshold helps to prevent front-running issues
-        _indexToken = dataReader().getIndexToken(_indexToken);
-        uint256 minBps = block.timestamp > _lastIncreasedTime + vault.minProfitTime() ? 0 : vault.minProfitBasisPoints(_indexToken);
-        if (hasProfit && delta * 10000 <= _size * minBps) {
-            delta = 0;
         }
 
         return (hasProfit, delta);
