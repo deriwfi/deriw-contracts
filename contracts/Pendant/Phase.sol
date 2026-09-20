@@ -17,7 +17,7 @@ import "../referrals/interfaces/IFeeBonus.sol";
 import "../meme/interfaces/IMemeData.sol";
 import "../upgradeability/Synchron.sol";
 import "../core/interfaces/IDataReader.sol";
-import "../meme/interfaces/IMemeFactory.sol";
+import "./interfaces/ICalculatePNL.sol";
 
 contract Phase is Synchron, IStruct, IPhaseStruct {
     using SafeERC20 for IERC20;
@@ -587,7 +587,7 @@ contract Phase is Synchron, IStruct, IPhaseStruct {
         bool _isLong, 
         uint256 _lastIncreasedTime,
         uint256 price
-    ) external pure returns (bool, uint256) {
+    ) external view returns (bool, uint256) {
         return _getDelta(_indexToken, _size, _averagePrice, _isLong, _lastIncreasedTime, price);
     }
 
@@ -621,13 +621,13 @@ contract Phase is Synchron, IStruct, IPhaseStruct {
     }
 
     function _getDelta(
-        address /*_indexToken*/, 
+        address _indexToken, 
         uint256 _size, 
         uint256 _averagePrice, 
         bool _isLong, 
         uint256 /*_lastIncreasedTime*/,
         uint256 price
-    ) internal pure returns (bool, uint256) {
+    ) internal view returns (bool, uint256) {
         if(_averagePrice == 0) revert("_averagePrice err");
 
         uint256 priceDelta = _averagePrice > price ? _averagePrice - price : price - _averagePrice;
@@ -639,6 +639,7 @@ contract Phase is Synchron, IStruct, IPhaseStruct {
         } else {
             hasProfit = _averagePrice > price;
         }
+        delta = calculatePNL.getDelta(_indexToken, delta, hasProfit);
 
         return (hasProfit, delta);
     }
@@ -898,5 +899,38 @@ contract Phase is Synchron, IStruct, IPhaseStruct {
         uint256 afterLong = vault.globalLongAveragePrices(_indexToken);
         uint256 afterShort = vault.globalShortAveragePrices(_indexToken);
         emit UpdateAveragePrice(_account, _indexToken, beforeLong, afterLong, beforeShort, afterShort);
+    }
+
+    // ***********************************************************************************
+
+    /// @notice The CalculatePNL contract for PnL capping and per-period loss accounting
+    ICalculatePNL public calculatePNL;
+
+    /// @notice Set the CalculatePNL contract address
+    /// @dev Only callable by governance. Non-zero address required.
+    /// @param _calculatePNL The CalculatePNL contract address
+    function setCalculatePNL(address _calculatePNL) external onlyGov {
+        if(_calculatePNL == address(0)) revert();
+        calculatePNL = ICalculatePNL(_calculatePNL);
+    }
+
+    /// @notice Forward the actual loss amount for the current period to CalculatePNL
+    /// @dev Only callable by the Vault. CalculatePNL resolves the pool target token and period,
+    ///      then accumulates the loss into its per-period actualLossAmount mapping.
+    /// @param _indexToken The instrument token
+    /// @param _collateralToken The collateral token
+    /// @param _amount The actual loss amount for the current period
+    function recordActualLoss(address _indexToken, address _collateralToken, uint256 _amount) external {
+        if(msg.sender != address(vault)) revert();
+        calculatePNL.recordActualLoss(_indexToken, _collateralToken, _amount);
+    }
+
+    /// @notice Get an instrument's net long/short value (PnL), used by CalculatePNL for aggregation
+    /// @dev Exposes the internal _getLongShortValue for cross-contract PnL aggregation.
+    /// @param indexToken The instrument token
+    /// @return longValue The instrument's long-side PnL
+    /// @return shortValue The instrument's short-side PnL
+    function getIndexTokenLongShortValue(address indexToken) external view returns(int256 longValue, int256 shortValue) {
+        return _getLongShortValue(indexToken);
     }
 }

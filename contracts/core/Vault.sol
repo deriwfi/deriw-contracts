@@ -857,6 +857,7 @@ contract Vault is Synchron, ReentrancyGuard, IEventStruct {
             revert();
         }
 
+        phase.recordActualLoss(_indexToken, _collateralToken, _amount);
         _poolAmounts[_indexToken][_collateralToken] -= _amount;
         _validate(_reservedAmounts[_indexToken][_collateralToken] <= _poolAmounts[_indexToken][_collateralToken]  * multiplier / 10000, 50);
         emit DecreasePoolAmount(_indexToken, _collateralToken, _amount);

@@ -125,4 +125,6 @@ interface IPhase is IPhaseStruct {
     ) external view returns(uint256);
     function totalRate() external view returns(uint256);
     function sideRate() external view returns(uint256);
+    function getIndexTokenLongShortValue(address indexToken) external view returns(int256 longValue, int256 shortValue);
+    function recordActualLoss(address _indexToken, address _collateralToken, uint256 _amount) external;
 }
