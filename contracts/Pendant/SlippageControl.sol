@@ -8,6 +8,8 @@ import "./interfaces/ISlippage.sol";
 import "../core/interfaces/IPositionRouter.sol";
 import "../core/interfaces/IOrderBook.sol";
 import "../upgradeability/Synchron.sol";
+import "../meme/interfaces/IMemeFactory.sol";
+import "../meme/interfaces/IMemeData.sol";
 
 contract SlippageControl is Synchron {
 
@@ -86,7 +88,7 @@ contract SlippageControl is Synchron {
         uint256 impactFactorK;        // Impact factor k (basis points)
         uint256 exponentN;            // Exponent n
     }
-    
+
     /// @notice Struct for default slippage params set per pool collection or single token
     struct SlippageParams {
         uint256 defaultBaseCapRate;          // Base cap rate (basis points)
@@ -139,8 +141,11 @@ contract SlippageControl is Synchron {
         maxSkewRatio = 10000;
     }
 
-    /// @notice Set core contract addresses (vault + dataReader only; others unused)
-    /// @dev Only callable by governance. All addresses must be non-zero.
+    /// @notice Set the core contract addresses used by slip pricing
+    /// @dev Only callable by governance. All addresses must be non-zero:
+    ///      vault + dataReader — pool depth / OI / rate data;
+    ///      slippage — getRate / getLongRate / getShortRate used by decrease pricing;
+    ///      positionRouter + orderBook — request-scoped decrease price caches.
     function setContract(
         address _vault,
         address _dataReader,
@@ -176,9 +181,10 @@ contract SlippageControl is Synchron {
     ///      identified by memberTokenTargetID under the pool target token.
     ///      Also supports single-token mode (belongTo == 1), though generally not used —
     ///      per-token configuration is preferred via setIndexTokenSlippageParams.
-    ///      Channel tokens resolve to their underlying main-pool token via getIndexToken,
-    ///      and the pool target token is derived automatically via getTargetIndexToken,
-    ///      so channel tokens inherit the main-pool default configuration.
+    ///      Params are keyed by the input token itself (under its pool target token derived via
+    ///      getTargetIndexToken), so a channel token gets its OWN default slot; when no channel-level
+    ///      default is set, _getDefaultSlippageParams falls back to the main-pool default — meaning
+    ///      channel tokens inherit the main-pool configuration unless configured separately.
     ///      Field validation:
     ///      - defaultBaseCapRate: caps Layer-1 baseSlip (baseSlip = min(k × ratioⁿ, baseCapRate)),
     ///        in basis points, range (0, 1000] i.e. ≤ 10%.
@@ -189,13 +195,13 @@ contract SlippageControl is Synchron {
     ///        range (0, BASE_RATE_DIVISOR].
     /// @param _indexToken Any token within the target pool/collection.
     ///      For collections, passing any member token resolves to the correct collection.
-    ///      For channel tokens, resolves to the underlying main-pool token automatically.
+    ///      A channel token is stored under its own slot (keyed by the channel token itself) and
+    ///      inherits the main-pool default only when it has no dedicated default set.
     /// @param _params The default slippage parameters to set
     function setDefaultSlippageParams(
         address _indexToken,
         SlippageParams calldata _params
     ) external onlyGov {
-        _indexToken = dataReader.getIndexToken(_indexToken);
         address targetToken = dataReader.getTargetIndexToken(_indexToken);
         (, uint256 memberTokenTargetID, , uint8 belongTo) = dataReader.getTokenInfo(_indexToken);
         if(belongTo != 1 && belongTo != 2) revert("belongTo err");
@@ -218,8 +224,9 @@ contract SlippageControl is Synchron {
     /// @dev Only callable by governance.
     ///      Once set, getIndexTokenSlippageParams returns these values instead of the defaults
     ///      from getDefaultSlippageParams. Does NOT fall back to defaults for any field.
-    ///      Channel tokens resolve to their underlying main-pool token via getIndexToken,
-    ///      so the params are stored under the main-pool token key.
+    ///      Channel tokens: pass the channel token itself to store dedicated params under that
+    ///      channel token; these then take priority over the main pool. Channel tokens without
+    ///      dedicated params fall back to the main-pool / default params.
     ///      Field validation:
     ///      - indexToken must be non-zero.
     ///      - baseCapRate: caps Layer-1 baseSlip (baseSlip = min(k × ratioⁿ, baseCapRate)),
@@ -233,13 +240,14 @@ contract SlippageControl is Synchron {
         if(len == 0) revert("empty params");
         for (uint256 i = 0; i < len; i++) {
             IndexTokenSlippageParams calldata p = _params[i];
-            if(p.indexToken == address(0)) revert("indexToken err");
+            // Validity check only: the token must resolve to a pool target token, otherwise DataReader
+            // reverts with "_indexToken err" (this also rejects address(0)). The return value is unused.
+            dataReader.getTargetIndexToken(p.indexToken);
             if(p.baseCapRate == 0 || p.baseCapRate > 1000) revert("baseCapRate err");  // baseCapRate ∈ (0, 1000]
             if(p.impactFactorK == 0 || p.impactFactorK > 1000) revert("impactFactorK err");  // impactFactorK ∈ (0, 1000]
             if(p.exponentN == 0 || p.exponentN > 3) revert("exponentN err");  // exponentN ∈ [1, 3]
-            address indexToken = dataReader.getIndexToken(p.indexToken);
-            _indexTokenSlippageParams[indexToken] = p;
-            emit SetIndexTokenSlippageParams(indexToken, p.baseCapRate, p.impactFactorK, p.exponentN);
+            _indexTokenSlippageParams[p.indexToken] = p;
+            emit SetIndexTokenSlippageParams(p.indexToken, p.baseCapRate, p.impactFactorK, p.exponentN);
         }
     }
 
@@ -268,16 +276,17 @@ contract SlippageControl is Synchron {
     }
 
     /// @notice Set the max skew ratio for surcharge slope computation
-    /// @dev Only callable by governance. Must be >= BASE_RATE_DIVISOR (1.0 in basis points).
-    /// @param _maxSkewRatio The max skew ratio in basis points (e.g. 10000 = 1.0)
+    /// @dev Only callable by governance. Restricted to [BASE_RATE_DIVISOR (1.0), 20000 (2.0)].
+    /// @param _maxSkewRatio The max skew ratio in basis points (10000 = 1.0, 20000 = 2.0)
     function setMaxSkewRatio(uint256 _maxSkewRatio) external onlyGov {
-        if(_maxSkewRatio < BASE_RATE_DIVISOR) revert("maxSkewRatio err");
+        if(_maxSkewRatio < BASE_RATE_DIVISOR || _maxSkewRatio > 20000) revert("maxSkewRatio err");
         maxSkewRatio = _maxSkewRatio;
         emit SetMaxSkewRatio(_maxSkewRatio);
     }
 
     /// @notice Get default slippage parameters resolved by belongTo (collection or single token)
-    /// @param _indexToken The index token to query (auto-resolved to its underlying index token)
+    /// @param _indexToken The token to query: a channel token's own default wins when configured,
+    ///        otherwise it falls back to the resolved main-pool default
     /// @return defaultBaseCapRate The base cap rate (basis points)
     /// @return defaultImpactFactorK The impact factor k (basis points)
     /// @return defaultExponentN The exponent n
@@ -285,15 +294,20 @@ contract SlippageControl is Synchron {
     function getDefaultSlippageParams(address _indexToken)
         public view returns(uint256 defaultBaseCapRate, uint256 defaultImpactFactorK, uint256 defaultExponentN, uint256 defaultSoftThresholdRate)
     {
-        _indexToken = dataReader.getIndexToken(_indexToken);
         return _getDefaultSlippageParams(_indexToken);
     }
 
     /// @notice Default slippage parameters for an ALREADY-RESOLVED index token.
-    /// @dev    The input must be the resolved underlying index token (resolve via getIndexToken
-    ///         first). Kept internal so callers that already resolved the token (e.g.
-    ///         getIndexTokenSlippageParams) do not pay a second, idempotent channel-token lookup.
-    /// @param _indexToken The resolved underlying index token
+    /// @dev    Resolution order:
+    ///         1. Channel-level default: only when the input token resolves to a different index
+    ///            token (i.e. it is a channel token) and a default is configured under the input
+    ///            token itself, that value is returned.
+    ///         2. Main-pool default: the default configured for the resolved index token's slot.
+    ///         3. Global default constants (DEFAULT_*).
+    ///      For a regular token steps 1 and 2 address the SAME slot, so it is read only once.
+    /// @param _indexToken The token to resolve (a channel token or a main-pool token); it is
+    ///        resolved internally via getIndexToken only to detect the channel case and to fall
+    ///        back to the main pool
     /// @return defaultBaseCapRate The base cap rate (basis points)
     /// @return defaultImpactFactorK The impact factor k (basis points)
     /// @return defaultExponentN The exponent n
@@ -301,24 +315,57 @@ contract SlippageControl is Synchron {
     function _getDefaultSlippageParams(address _indexToken)
         internal view returns(uint256 defaultBaseCapRate, uint256 defaultImpactFactorK, uint256 defaultExponentN, uint256 defaultSoftThresholdRate)
     {
-        address targetToken = dataReader.getTargetIndexToken(_indexToken);
+        address indexToken = dataReader.getIndexToken(_indexToken);
         (, uint256 memberTokenTargetID, , uint8 belongTo) = dataReader.getTokenInfo(_indexToken);
-        SlippageParams memory p;
-        if(belongTo == 2) {
-            p = _defaultSlippageTargetIDParams[targetToken][memberTokenTargetID];
-        } else {
-            p = _defaultSlippageSingleTokenParams[targetToken][_indexToken];
+
+        // Slot keyed by the input token: for a channel token this is its own channel-level default,
+        // for a regular token it is already the main-pool slot.
+        SlippageParams memory p = _loadDefaultParams(dataReader.getTargetIndexToken(_indexToken), memberTokenTargetID, belongTo, _indexToken);
+
+        if(indexToken != _indexToken) {
+            // Channel token: a channel-level default wins, otherwise fall back to the main pool.
+            if(p.isSet) return (p.defaultBaseCapRate, p.defaultImpactFactorK, p.defaultExponentN, p.defaultSoftThresholdRate);
+            
+            p = _loadDefaultParams(dataReader.getTargetIndexToken(indexToken), memberTokenTargetID, belongTo, indexToken);
         }
+
         defaultBaseCapRate = p.isSet ? p.defaultBaseCapRate : DEFAULT_BASE_CAP_RATE;
         defaultImpactFactorK = p.isSet ? p.defaultImpactFactorK : DEFAULT_IMPACT_FACTOR_K;
         defaultExponentN = p.isSet ? p.defaultExponentN : DEFAULT_EXPONENT_N;
         defaultSoftThresholdRate = p.isSet ? p.defaultSoftThresholdRate : DEFAULT_SOFT_THRESHOLD_RATE;
     }
 
-    /// @notice Get slippage parameters for an index token, with per-token override
-    /// @dev If _indexTokenSlippageParams[_indexToken] is set, returns those values.
-    ///      Otherwise falls back to getDefaultSlippageParams.
-    /// @param _indexToken The index token to query
+    /// @notice Load the default slippage params stored in one pool slot
+    /// @dev belongTo == 2 → collection slot _defaultSlippageTargetIDParams[poolTargetToken][memberTokenTargetID];
+    ///      otherwise      → single-token slot _defaultSlippageSingleTokenParams[poolTargetToken][token].
+    /// @param poolTargetToken The pool target token of the slot
+    /// @param memberTokenTargetID The member token target ID (used when belongTo == 2)
+    /// @param belongTo Token classification (1 = single, 2 = member)
+    /// @param token The token key used for the single-token slot
+    /// @return p The stored params (p.isSet == false when the slot was never configured)
+    function _loadDefaultParams(
+        address poolTargetToken,
+        uint256 memberTokenTargetID,
+        uint8 belongTo,
+        address token
+    ) private view returns (SlippageParams memory p) {
+        if(belongTo == 2) {
+            p = _defaultSlippageTargetIDParams[poolTargetToken][memberTokenTargetID];
+        } else {
+            p = _defaultSlippageSingleTokenParams[poolTargetToken][token];
+        }
+    }
+
+    /// @notice Get slippage parameters for an index token, with per-token and channel overrides
+    /// @dev Resolution order:
+    ///      1. Per-token params stored under the input token itself — this is how a CHANNEL token
+    ///         gets its own baseCapRate / k / n (set via setIndexTokenSlippageParams with the
+    ///         channel token); it takes priority over the main pool.
+    ///      2. Per-token params stored under the resolved underlying index token (main-pool config).
+    ///      3. Default params of the (resolved) collection / single token.
+    ///      In cases 1 and 2 the returned softThresholdRate always comes from the default-params
+    ///      path; it is never taken from _indexTokenSlippageParams.
+    /// @param _indexToken The index or channel token to query
     /// @return baseCapRate The base cap rate (basis points)
     /// @return impactFactorK The impact factor k (basis points)
     /// @return exponentN The exponent n
@@ -326,15 +373,32 @@ contract SlippageControl is Synchron {
     function getIndexTokenSlippageParams(address _indexToken)
         public view returns(uint256 baseCapRate, uint256 impactFactorK, uint256 exponentN, uint256 softThresholdRate)
     {
-        // Resolve the channel token to its underlying index token exactly once; the resolved
-        // value is reused for both the per-token override lookup and the default fallback below.
-        _indexToken = dataReader.getIndexToken(_indexToken);
+        // Case 1: per-token params stored under the input token itself (a channel token's own
+        // config, or a regular token's main-pool config).
         IndexTokenSlippageParams memory p = _indexTokenSlippageParams[_indexToken];
+        // Token under which the default params (softThresholdRate and the fallback values) are read:
+        // the input token for case 1 (lazy — no channel resolution is paid), or the resolved
+        // underlying index token for case 2.
+        address fallbackToken = _indexToken;
+
+        if(p.indexToken == address(0)) {
+            // Case 2: only channel tokens need the second lookup under the resolved underlying index
+            // token; for a regular token getIndexToken returns the input unchanged (same slot as
+            // case 1), so the lookup is skipped and no duplicate read is paid.
+            address indexToken = dataReader.getIndexToken(_indexToken);
+            if(indexToken != _indexToken) {
+                fallbackToken = indexToken;
+                p = _indexTokenSlippageParams[indexToken];
+            }
+        }
+
         if(p.indexToken != address(0)) {
-            (, , , softThresholdRate) = _getDefaultSlippageParams(_indexToken);
+            // softThresholdRate always comes from the default-params path, never from the override.
+            (, , , softThresholdRate) = _getDefaultSlippageParams(fallbackToken);
             return (p.baseCapRate, p.impactFactorK, p.exponentN, softThresholdRate);
         }
-        return _getDefaultSlippageParams(_indexToken);
+
+        return _getDefaultSlippageParams(fallbackToken);
     }
 
     /// @notice Get the global slip cap multiplier
@@ -347,11 +411,16 @@ contract SlippageControl is Synchron {
     // ============ Slip Calculation ============
 
     /// @notice Calculate order-size-based slippage (baseSlip and finalSlip), MUTI-scaled (1e8)
-    /// @dev Formula:
+    /// @dev Channel-whitelist short-circuit: the local isSetChannelFinalslipcap flag is checked FIRST
+    ///      (tokens without a configured cap pay no channel lookup at all), then the token must
+    ///      belong to a whitelisted channel pool; in that case the configured cap is returned as
+    ///      BOTH baseSlip and finalSlip with zero skew adjustment (no Layer-1/Layer-2 computation).
+    ///      Normal path formula:
     ///      Dusd = poolAmounts × tokenToUsdMin × currRate / BASE_RATE_DIVISOR
     ///      ratio = _sizeDelta / D  (scaled by MUTI)
     ///      baseSlip = min(k × ratioⁿ, baseCapRate)  (n ∈ {1,2,3}, all MUTI-scaled)
-    ///      finalSlipCap = slipCapMultiplier × baseCapRate / BASE_RATE_DIVISOR
+    ///      finalSlipCap = getEffectiveSlipLimits(_indexToken).multiplier × baseCapRate / BASE_RATE_DIVISOR
+    ///                     (channel-pool multiplier when configured, otherwise the global multiplier)
     ///      finalSlip = min(baseSlip + skewAdjustment, finalSlipCap)
     /// @param _indexToken The index token
     /// @param _collateralToken The collateral token (for pool depth)
@@ -366,6 +435,10 @@ contract SlippageControl is Synchron {
         uint256 _sizeDelta,
         bool _isLong
     ) external view returns(uint256 baseSlip, uint256 finalSlip, int256 skewAdjustment) {
+        if(isSetChannelFinalslipcap[_indexToken] && isChannelWhitelist(_indexToken)) {
+            return (channelIndexTokenTofinalSlipCap[_indexToken], channelIndexTokenTofinalSlipCap[_indexToken], 0);
+        }
+
         // Layer 1: order-size impact
         uint256 baseCapRate;
         (baseSlip, baseCapRate) = _computeLayer1Slip(_indexToken, _collateralToken, _sizeDelta);
@@ -379,7 +452,9 @@ contract SlippageControl is Synchron {
 
         // finalSlip = min(rawFinalSlip, finalSlipCap)
         //   finalSlipCap = multiplier × baseCapRate / BASE_RATE_DIVISOR (e.g. 1.2 × cap)
-        uint256 finalSlipCap = getSlipCapMultiplierCache() * baseCapRate / BASE_RATE_DIVISOR;
+        //   baseCapRate is the MUTI-scaled value returned by _computeLayer1Slip
+        (uint256 multiplier, ) = getEffectiveSlipLimits(_indexToken);
+        uint256 finalSlipCap = multiplier * baseCapRate / BASE_RATE_DIVISOR;
         finalSlip = rawFinalSlip < finalSlipCap ? rawFinalSlip : finalSlipCap;
     }
 
@@ -389,6 +464,9 @@ contract SlippageControl is Synchron {
     ///      ratio = _sizeDelta / D  (scaled by MUTI)
     ///      n = getIndexTokenSlippageParams(...).exponentN  (1 ≤ n ≤ 3)
     ///      baseSlip = min(k × ratioⁿ, baseCapRate)
+    ///      NOTE ON UNITS: getIndexTokenSlippageParams returns baseCapRate in BASIS POINTS; it is
+    ///      converted to MUTI scaling below, so BOTH returned values are MUTI-scaled. This is NOT
+    ///      the same unit as the basis-points baseCapRate used inside _computeSkewSurchargeRate.
     function _computeLayer1Slip(
         address _indexToken,
         address _collateralToken,
@@ -402,7 +480,7 @@ contract SlippageControl is Synchron {
 
         uint256 k;
         uint256 n;
-        (baseCapRate, k, n, ) = getIndexTokenSlippageParams(_indexToken);
+        (baseCapRate, k, n, ) = getIndexTokenSlippageParams(_indexToken);   // baseCapRate in basis points
 
         // ratio = _sizeDelta / Dusd, scaled by MUTI
         uint256 ratio = _sizeDelta * MUTI / Dusd;
@@ -412,6 +490,8 @@ contract SlippageControl is Synchron {
 
         // baseSlip = k × ratioⁿ, capped by baseCapRate, all MUTI-scaled
         uint256 rawBaseSlip = k * ratioPow / BASE_RATE_DIVISOR;
+        // Convert baseCapRate from basis points (as returned by getIndexTokenSlippageParams) to MUTI
+        // scaling, so it shares the unit of rawBaseSlip and of finalSlipCap in getSlipData.
         baseCapRate = baseCapRate * MUTI / BASE_RATE_DIVISOR;
         baseSlip = rawBaseSlip < baseCapRate ? rawBaseSlip : baseCapRate;
     }
@@ -479,8 +559,10 @@ contract SlippageControl is Synchron {
 
     /// @notice Compute skewSurchargeRate: slope that pushes baseSlip from baseCapRate to finalSlipCap at max imbalance
     /// @dev Formula: (finalSlipCap - baseCapRate) / (maxSkewRatio - softThresholdRate), scaled by MUTI
-    ///      finalSlipCap = multiplier × baseCapRate / BASE_RATE_DIVISOR
-    ///      baseCapRate = getIndexTokenSlippageParams(_indexToken).baseCapRate
+    ///      finalSlipCap = getEffectiveSlipLimits(_indexToken).multiplier × baseCapRate / BASE_RATE_DIVISOR
+    ///      maxSkewRatio = getEffectiveSlipLimits(_indexToken).skewRatio  (channel override when configured,
+    ///      otherwise the global maxSkewRatio; both are the "1" in 1 - softThreshold share of D)
+    ///      baseCapRate   = getIndexTokenSlippageParams(_indexToken).baseCapRate
     ///      At max imbalance, total slip = baseSlip + skewAdjustment ≤ finalSlipCap
     /// @param _indexToken The index token for param lookup
     /// @param _softThresholdRate Soft threshold as fraction of D (basis points)
@@ -490,14 +572,16 @@ contract SlippageControl is Synchron {
         uint256 _softThresholdRate
     ) private view returns(uint256 skewSurchargeRate) {
         (uint256 baseCapRate, , , ) = getIndexTokenSlippageParams(_indexToken);
+        // multiplier + max skew ratio resolved together in ONE channel lookup
+        (uint256 multiplier, uint256 skewRatio) = getEffectiveSlipLimits(_indexToken);
         // finalSlipCap = multiplier × baseCapRate / BASE_RATE_DIVISOR (basis points, same unit as baseCapRate)
-        uint256 finalSlipCap = getSlipCapMultiplierCache() * baseCapRate / BASE_RATE_DIVISOR;
+        uint256 finalSlipCap = multiplier * baseCapRate / BASE_RATE_DIVISOR;
 
         // Available total surcharge space: finalSlipCap - baseCapRate
         // Divided by remaining skew headroom: maxSkewRatio - softThresholdRate
         // scaled by MUTI for integer precision
-        if(maxSkewRatio <= _softThresholdRate) return 0;
-        skewSurchargeRate = (finalSlipCap - baseCapRate) * MUTI / (maxSkewRatio - _softThresholdRate);
+        if(skewRatio <= _softThresholdRate) return 0;
+        skewSurchargeRate = (finalSlipCap - baseCapRate) * MUTI / (skewRatio - _softThresholdRate);
     }
 
     /// @notice Compute OI imbalance skew before and after a candidate order
@@ -607,5 +691,134 @@ contract SlippageControl is Synchron {
 
     function getSlipRate(address indexToken, uint256 size) external view returns(uint256, uint256) {
         return (slippage.getLongRate(indexToken, size), slippage.getShortRate(indexToken, size));
+    }
+
+    // ***********************************************************************************
+    /// @notice Emitted when a channel token's fixed final slip cap is configured
+    /// @param indexToken The channel token (channel-mapped placeholder token)
+    /// @param finalSlipCap The cap in MUTI-scaled units (1e8 = 100%), max 5% (0.05e8);
+    ///        0 means no slippage is charged for that token
+    event SetChannelFinalslipcap(address indexToken, uint256 finalSlipCap);
+
+    /// @notice Emitted when a channel pool's slip-cap multiplier and max skew ratio are set
+    /// @param targetToken The channel pool's target token (channel pool token) the values are stored under
+    /// @param multiplier The slip cap multiplier in basis points (10000 = 1.0x, max 20000 = 2.0x)
+    /// @param maxSkewRatio The max skew ratio in basis points (10000 = 1.0, max 20000 = 2.0)
+    event SetChannelCapMulAndMaxSkewRatio(address targetToken, uint256 multiplier, uint256 maxSkewRatio);
+
+    /// @notice Channel-pool override of the slip cap multiplier (the 1.2x coefficient), keyed by the pool's channel pool token
+    /// @dev Key = getChannelMappedTokenPoolInfo(channelToken).targetToken, i.e. the pool's own channel
+    ///      pool token, which is created and configured with the pool (createChannelPool) — one slot
+    ///      per pool. A pool whose target token is not configured (address(0)) cannot be used on the
+    ///      channel path.
+    ///      0 (unset) falls back to the global slipCapMultiplier / DEFAULT_SLIP_CAP_MULTIPLIER (12000).
+    ///      Pool-level setting only: whitelisting is NOT required for this override — the whitelist
+    ///      only gates the per-channel-token fixed final slip cap (batchSetChannelFinalslipcap).
+    mapping(address => uint256) public channelSlipCapMultiplier;
+
+    /// @notice Channel-pool override of maxSkewRatio (the 1 in 1 - softThreshold share of D), keyed by the pool's channel pool token
+    /// @dev Same key / availability rules as channelSlipCapMultiplier (targetToken must be configured).
+    ///      0 (unset) falls back to the global maxSkewRatio.
+    ///      Pool-level setting only: whitelisting is NOT required for this override.
+    mapping(address => uint256) public channelMaxSkewRatio;
+
+    /// @notice Per-channel-token fixed final slip cap, keyed by the channel token itself
+    /// @dev MUTI-scaled (1e8 = 100%), max 5%. Applied only when the pool owner is whitelisted
+    ///      (see isChannelWhitelist) and isSetChannelFinalslipcap[channelToken] is true.
+    ///      A configured value of 0 is valid and means no slippage at all for that token.
+    mapping(address => uint256) public channelIndexTokenTofinalSlipCap;
+
+    /// @notice Whether a channel token has an explicit final slip cap configured
+    mapping(address => bool) public isSetChannelFinalslipcap;
+
+    /// @notice Input struct for batchSetChannelFinalslipcap
+    /// @param indexToken The channel token
+    /// @param finalSlipCap The final slip cap in MUTI-scaled units (1e8 = 100%), must be <= 5% (0.05e8);
+    ///        0 is allowed and means no slippage
+    struct FinalslipcapData {
+        address indexToken;
+        uint256 finalSlipCap;
+    }
+
+    /// @notice Batch-set the fixed final slip cap for channel tokens
+    /// @dev Only callable by governance. For each entry:
+    ///      - The channel token's pool owner must be whitelisted (isChannelWhitelist) at WRITE time
+    ///        here, and is checked again at READ time in getSlipData; otherwise the entry is skipped.
+    ///        Whitelist the pool owner in MemeData before configuring a cap.
+    ///      - The cap must be <= 5% (0.05e8 in MUTI-scaled units); otherwise the entry is skipped.
+    ///        A cap of 0 is valid and means no slippage is charged for that token.
+    ///      - Skipped entries do NOT revert and emit NO event, so failed entries are silent.
+    ///      The stored key is the channel token itself and the isSet flag is latched on first write.
+    /// @param _slipcapData Array of {channel token, final slip cap (MUTI-scaled)}
+    function batchSetChannelFinalslipcap(FinalslipcapData[] calldata _slipcapData) external onlyGov {
+        uint256 len = _slipcapData.length;
+        if(len == 0) revert("empty _slipcapData");
+        for(uint256 i = 0; i < len; i++) {
+            address _indexToken = _slipcapData[i].indexToken;
+            if(isChannelWhitelist(_indexToken)) {
+                uint256 _finalSlipCap = _slipcapData[i].finalSlipCap;
+                if(_finalSlipCap <= 0.05e8) {
+                    channelIndexTokenTofinalSlipCap[_indexToken] = _finalSlipCap;
+                    if(!isSetChannelFinalslipcap[_indexToken]) isSetChannelFinalslipcap[_indexToken] = true;
+                    emit SetChannelFinalslipcap(_indexToken, _finalSlipCap);
+                }
+            }
+        }
+    }
+
+    /// @notice Set a channel pool's slip-cap multiplier (1.2x coefficient) and max skew ratio
+    /// @dev Only callable by governance. _indexToken must be a channel-mapped token.
+    ///      Both values are in basis points and restricted to [BASE_RATE_DIVISOR (1.0x), 20000 (2.0x)].
+    ///      Values are stored under the pool's channel pool token (targetToken). The pool's target
+    ///      token is configured when the pool is created (createChannelPool); a token whose pool has
+    ///      no configured target token (address(0)) cannot be used on the channel path.
+    /// @param _indexToken The channel token used to resolve its pool
+    /// @param _multiplier The slip cap multiplier in basis points (10000 = 1.0x)
+    /// @param _maxSkewRatio The max skew ratio in basis points (10000 = 1.0, max 20000 = 2.0)
+    function setChannelCapMulAndMaxSkewRatio(address _indexToken, uint256 _multiplier, uint256 _maxSkewRatio) external onlyGov {
+        (address pool,,address targetToken,) = IMemeFactory(dataReader.memeFactory()).getChannelMappedTokenPoolInfo(_indexToken);
+        if(pool == address(0)) revert("_indexToken err");
+        if(_multiplier < BASE_RATE_DIVISOR || _multiplier > 20000) revert("multiplier err");
+        if(_maxSkewRatio < BASE_RATE_DIVISOR || _maxSkewRatio > 20000) revert("maxSkewRatio err");
+
+        channelSlipCapMultiplier[targetToken] = _multiplier;
+        channelMaxSkewRatio[targetToken] = _maxSkewRatio;
+        emit SetChannelCapMulAndMaxSkewRatio(targetToken, _multiplier, _maxSkewRatio);
+    }
+
+    /// @notice Whether the owner of the channel pool behind a channel token is whitelisted
+    /// @dev Returns false for non-channel tokens (pool == address(0)). Whitelisting is looked up
+    ///      on the channel pool owner in MemeData (isChannelWhitelist).
+    /// @param _indexToken The channel token to query
+    /// @return True when the token is channel-mapped AND its pool owner is whitelisted
+    function isChannelWhitelist(address _indexToken) public view returns(bool) {
+        IMemeFactory memeFactory = IMemeFactory(dataReader.memeFactory());
+        (address pool,,,) = memeFactory.getChannelMappedTokenPoolInfo(_indexToken);
+        if(pool == address(0)) return false;
+        address user = memeFactory.channelPoolOwner(pool);
+        return IMemeData(dataReader.memeData()).isChannelWhitelist(user);
+    }
+
+    /// @notice Effective slip limits for a token: cap multiplier and max skew ratio
+    /// @dev Both values are resolved with a SINGLE channel lookup (getChannelMappedTokenPoolInfo).
+    ///      For a channel-mapped token a configured channel-pool override wins, otherwise the global
+    ///      configuration is used. Whitelisting is NOT required here — it only gates the fixed final
+    ///      slip cap configured via batchSetChannelFinalslipcap.
+    /// @param _indexToken The index / channel token to query
+    /// @return multiplier The effective slip cap multiplier in basis points (falls back to the global
+    ///         slipCapMultiplier / DEFAULT_SLIP_CAP_MULTIPLIER = 12000 when unset)
+    /// @return skewRatio The effective max skew ratio in basis points (falls back to the global
+    ///         maxSkewRatio when unset)
+    function getEffectiveSlipLimits(address _indexToken) public view returns(uint256 multiplier, uint256 skewRatio) {
+        (address pool,,address targetToken, ) = IMemeFactory(dataReader.memeFactory()).getChannelMappedTokenPoolInfo(_indexToken);
+        if(pool != address(0)) {
+            uint256 channelMultiplier = channelSlipCapMultiplier[targetToken];
+            uint256 channelSkewRatio = channelMaxSkewRatio[targetToken];
+            multiplier = channelMultiplier > 0 ? channelMultiplier : getSlipCapMultiplierCache();
+            skewRatio = channelSkewRatio > 0 ? channelSkewRatio : maxSkewRatio;
+        } else {
+            multiplier = getSlipCapMultiplierCache();
+            skewRatio = maxSkewRatio;
+        }
     }
 }
