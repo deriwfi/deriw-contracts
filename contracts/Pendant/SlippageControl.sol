@@ -294,11 +294,15 @@ contract SlippageControl is Synchron {
     function getDefaultSlippageParams(address _indexToken)
         public view returns(uint256 defaultBaseCapRate, uint256 defaultImpactFactorK, uint256 defaultExponentN, uint256 defaultSoftThresholdRate)
     {
-        return _getDefaultSlippageParams(_indexToken);
+        (defaultBaseCapRate, defaultImpactFactorK, defaultExponentN, defaultSoftThresholdRate, ) = _getDefaultSlippageParams(_indexToken);
     }
 
-    /// @notice Default slippage parameters for an ALREADY-RESOLVED index token.
-    /// @dev    Resolution order:
+    /// @notice Default slippage parameters for a token
+    /// @dev    IMPORTANT: always pass the ORIGINAL token (a channel token or a main-pool token),
+    ///         never a token that has already been resolved via getIndexToken — resolution happens
+    ///         inside this function, and that is what keeps a channel token's own default reachable
+    ///         (passing the resolved main-pool token would silently skip the channel level).
+    ///         Resolution order:
     ///         1. Channel-level default: only when the input token resolves to a different index
     ///            token (i.e. it is a channel token) and a default is configured under the input
     ///            token itself, that value is returned.
@@ -312,8 +316,11 @@ contract SlippageControl is Synchron {
     /// @return defaultImpactFactorK The impact factor k (basis points)
     /// @return defaultExponentN The exponent n
     /// @return defaultSoftThresholdRate Skew surcharge trigger threshold (basis points)
+    /// @return channelDefaultSet True only when the input token is channel-mapped AND a default is
+    ///         stored under the channel token itself; callers use it to give the channel level
+    ///         priority over the main-pool per-token config
     function _getDefaultSlippageParams(address _indexToken)
-        internal view returns(uint256 defaultBaseCapRate, uint256 defaultImpactFactorK, uint256 defaultExponentN, uint256 defaultSoftThresholdRate)
+        internal view returns(uint256 defaultBaseCapRate, uint256 defaultImpactFactorK, uint256 defaultExponentN, uint256 defaultSoftThresholdRate, bool channelDefaultSet)
     {
         address indexToken = dataReader.getIndexToken(_indexToken);
         (, uint256 memberTokenTargetID, , uint8 belongTo) = dataReader.getTokenInfo(_indexToken);
@@ -324,8 +331,10 @@ contract SlippageControl is Synchron {
 
         if(indexToken != _indexToken) {
             // Channel token: a channel-level default wins, otherwise fall back to the main pool.
-            if(p.isSet) return (p.defaultBaseCapRate, p.defaultImpactFactorK, p.defaultExponentN, p.defaultSoftThresholdRate);
-            
+            if(p.isSet) {
+                return (p.defaultBaseCapRate, p.defaultImpactFactorK, p.defaultExponentN, p.defaultSoftThresholdRate, true);
+            }
+
             p = _loadDefaultParams(dataReader.getTargetIndexToken(indexToken), memberTokenTargetID, belongTo, indexToken);
         }
 
@@ -356,15 +365,20 @@ contract SlippageControl is Synchron {
         }
     }
 
-    /// @notice Get slippage parameters for an index token, with per-token and channel overrides
-    /// @dev Resolution order:
+    /// @notice Get slippage parameters for an index token, with channel and per-token overrides
+    /// @dev Resolution order (highest priority first):
     ///      1. Per-token params stored under the input token itself — this is how a CHANNEL token
     ///         gets its own baseCapRate / k / n (set via setIndexTokenSlippageParams with the
-    ///         channel token); it takes priority over the main pool.
-    ///      2. Per-token params stored under the resolved underlying index token (main-pool config).
-    ///      3. Default params of the (resolved) collection / single token.
-    ///      In cases 1 and 2 the returned softThresholdRate always comes from the default-params
-    ///      path; it is never taken from _indexTokenSlippageParams.
+    ///         channel token).
+    ///      2. Channel-level default of the input token: only when the input is a channel token and
+    ///         a default was configured for it via setDefaultSlippageParams (the WHOLE set is used,
+    ///         never mixed with main-pool values).
+    ///      3. Per-token params stored under the resolved underlying index token (main-pool config).
+    ///      4. Default params of the input token: main-pool default, then global defaults (DEFAULT_*).
+    ///      softThresholdRate ALWAYS comes from the default-params path (steps 2/4) — it is never
+    ///      taken from _indexTokenSlippageParams, whose struct has no such field — so it resolves as
+    ///      channel default → main-pool default → global default, independently of which level
+    ///      supplied baseCapRate / k / n.
     /// @param _indexToken The index or channel token to query
     /// @return baseCapRate The base cap rate (basis points)
     /// @return impactFactorK The impact factor k (basis points)
@@ -373,32 +387,41 @@ contract SlippageControl is Synchron {
     function getIndexTokenSlippageParams(address _indexToken)
         public view returns(uint256 baseCapRate, uint256 impactFactorK, uint256 exponentN, uint256 softThresholdRate)
     {
-        // Case 1: per-token params stored under the input token itself (a channel token's own
-        // config, or a regular token's main-pool config).
+        // Case 1: per-token params stored under the input token itself win over everything else.
         IndexTokenSlippageParams memory p = _indexTokenSlippageParams[_indexToken];
-        // Token under which the default params (softThresholdRate and the fallback values) are read:
-        // the input token for case 1 (lazy — no channel resolution is paid), or the resolved
-        // underlying index token for case 2.
-        address fallbackToken = _indexToken;
-
-        if(p.indexToken == address(0)) {
-            // Case 2: only channel tokens need the second lookup under the resolved underlying index
-            // token; for a regular token getIndexToken returns the input unchanged (same slot as
-            // case 1), so the lookup is skipped and no duplicate read is paid.
-            address indexToken = dataReader.getIndexToken(_indexToken);
-            if(indexToken != _indexToken) {
-                fallbackToken = indexToken;
-                p = _indexTokenSlippageParams[indexToken];
-            }
-        }
-
         if(p.indexToken != address(0)) {
-            // softThresholdRate always comes from the default-params path, never from the override.
-            (, , , softThresholdRate) = _getDefaultSlippageParams(fallbackToken);
+            (, , , softThresholdRate, ) = _getDefaultSlippageParams(_indexToken);
             return (p.baseCapRate, p.impactFactorK, p.exponentN, softThresholdRate);
         }
 
-        return _getDefaultSlippageParams(fallbackToken);
+        // Resolve the default layer once: it supplies the fallback values AND reports whether the
+        // input token carries its own channel-level default.
+        uint256 defBaseCapRate;
+        uint256 defImpactFactorK;
+        uint256 defExponentN;
+        bool channelDefaultSet;
+        (defBaseCapRate, defImpactFactorK, defExponentN, softThresholdRate, channelDefaultSet) =
+            _getDefaultSlippageParams(_indexToken);
+
+        if(channelDefaultSet) {
+            // Case 2: the channel token's own default (set via setDefaultSlippageParams with the
+            // channel token) takes priority over the main-pool per-token config.
+            return (defBaseCapRate, defImpactFactorK, defExponentN, softThresholdRate);
+        }
+
+        // Case 3: main-pool per-token config. For a regular token getIndexToken returns the input
+        // unchanged (same slot as case 1), so this second lookup is skipped and no duplicate read
+        // is paid.
+        address indexToken = dataReader.getIndexToken(_indexToken);
+        if(indexToken != _indexToken) {
+            p = _indexTokenSlippageParams[indexToken];
+            if(p.indexToken != address(0)) {
+                return (p.baseCapRate, p.impactFactorK, p.exponentN, softThresholdRate);
+            }
+        }
+
+        // Case 4: defaults of the input token (channel default absent → main pool → global).
+        return (defBaseCapRate, defImpactFactorK, defExponentN, softThresholdRate);
     }
 
     /// @notice Get the global slip cap multiplier
