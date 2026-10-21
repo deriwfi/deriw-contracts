@@ -189,4 +189,6 @@ interface IVault is IEventStruct {
     function referralData() external view returns(address);
 
     function updateAveragePrice(address _indexToken, uint256 _globalLongAveragePrices, uint256 _globalShortAveragePrices) external;
+
+    function getCoinType(address _indexToken) external view returns(uint8);
 }

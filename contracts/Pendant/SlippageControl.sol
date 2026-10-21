@@ -10,6 +10,7 @@ import "../core/interfaces/IOrderBook.sol";
 import "../upgradeability/Synchron.sol";
 import "../meme/interfaces/IMemeFactory.sol";
 import "../meme/interfaces/IMemeData.sol";
+import "./interfaces/ICoinData.sol";
 
 contract SlippageControl is Synchron {
 
@@ -434,10 +435,11 @@ contract SlippageControl is Synchron {
     // ============ Slip Calculation ============
 
     /// @notice Calculate order-size-based slippage (baseSlip and finalSlip), MUTI-scaled (1e8)
-    /// @dev Channel-whitelist short-circuit: the local isSetChannelFinalslipcap flag is checked FIRST
-    ///      (tokens without a configured cap pay no channel lookup at all), then the token must
-    ///      belong to a whitelisted channel pool; in that case the configured cap is returned as
-    ///      BOTH baseSlip and finalSlip with zero skew adjustment (no Layer-1/Layer-2 computation).
+    /// @dev Fixed-cap short-circuit: the local isSetFinalslipcap flag is checked FIRST
+    ///      (tokens without a configured cap pay no channel lookup at all), then the token must be
+    ///      eligible — either its pool owner is whitelisted (channel token, see isChannelWhitelist)
+    ///      or it is a main-pool token (getCoinType == 1). In that case the configured cap is
+    ///      returned as BOTH baseSlip and finalSlip with zero skew adjustment (no Layer-1/Layer-2).
     ///      Normal path formula:
     ///      Dusd = poolAmounts × tokenToUsdMin × currRate / BASE_RATE_DIVISOR
     ///      ratio = _sizeDelta / D  (scaled by MUTI)
@@ -458,8 +460,8 @@ contract SlippageControl is Synchron {
         uint256 _sizeDelta,
         bool _isLong
     ) external view returns(uint256 baseSlip, uint256 finalSlip, int256 skewAdjustment) {
-        if(isSetChannelFinalslipcap[_indexToken] && isChannelWhitelist(_indexToken)) {
-            return (channelIndexTokenTofinalSlipCap[_indexToken], channelIndexTokenTofinalSlipCap[_indexToken], 0);
+        if(isSetFinalslipcap[_indexToken] && (getCoinType(_indexToken) == 1 || isChannelWhitelist(_indexToken))) {
+            return (indexTokenTofinalSlipCap[_indexToken], indexTokenTofinalSlipCap[_indexToken], 0);
         }
 
         // Layer 1: order-size impact
@@ -717,11 +719,17 @@ contract SlippageControl is Synchron {
     }
 
     // ***********************************************************************************
-    /// @notice Emitted when a channel token's fixed final slip cap is configured
-    /// @param indexToken The channel token (channel-mapped placeholder token)
+    /// @notice Emitted when a token's fixed final slip cap is configured
+    /// @param indexToken The token (channel token or main-pool token)
     /// @param finalSlipCap The cap in MUTI-scaled units (1e8 = 100%), max 5% (0.05e8);
     ///        0 means no slippage is charged for that token
-    event SetChannelFinalslipcap(address indexToken, uint256 finalSlipCap);
+    event SetFinalslipcap(address indexToken, uint256 finalSlipCap);
+
+    /// @notice Emitted when a token's fixed final slip cap flag is turned off
+    /// @param indexToken The token whose flag changed
+    /// @param isSet Always false from batchSetFinalslipcapFlag: the flag is enabled implicitly
+    ///        when a cap is configured (batchSetFinalslipcap) and can only be disabled here
+    event SetFinalslipcapFlag(address indexToken, bool isSet);
 
     /// @notice Emitted when a channel pool's slip-cap multiplier and max skew ratio are set
     /// @param targetToken The channel pool's target token (channel pool token) the values are stored under
@@ -736,7 +744,7 @@ contract SlippageControl is Synchron {
     ///      channel path.
     ///      0 (unset) falls back to the global slipCapMultiplier / DEFAULT_SLIP_CAP_MULTIPLIER (12000).
     ///      Pool-level setting only: whitelisting is NOT required for this override — the whitelist
-    ///      only gates the per-channel-token fixed final slip cap (batchSetChannelFinalslipcap).
+    ///      only gates the per-channel-token fixed final slip cap (batchSetFinalslipcap).
     mapping(address => uint256) public channelSlipCapMultiplier;
 
     /// @notice Channel-pool override of maxSkewRatio (the 1 in 1 - softThreshold share of D), keyed by the pool's channel pool token
@@ -745,17 +753,20 @@ contract SlippageControl is Synchron {
     ///      Pool-level setting only: whitelisting is NOT required for this override.
     mapping(address => uint256) public channelMaxSkewRatio;
 
-    /// @notice Per-channel-token fixed final slip cap, keyed by the channel token itself
-    /// @dev MUTI-scaled (1e8 = 100%), max 5%. Applied only when the pool owner is whitelisted
-    ///      (see isChannelWhitelist) and isSetChannelFinalslipcap[channelToken] is true.
+    /// @notice Fixed final slip cap per token, keyed by the token itself (channel token or main-pool token)
+    /// @dev MUTI-scaled (1e8 = 100%), max 5%. Applied when isSetFinalslipcap[token] is true AND
+    ///      the token is eligible: its pool owner is whitelisted (channel token, see
+    ///      isChannelWhitelist) or it is a main-pool token (getCoinType == 1).
     ///      A configured value of 0 is valid and means no slippage at all for that token.
-    mapping(address => uint256) public channelIndexTokenTofinalSlipCap;
+    mapping(address => uint256) public indexTokenTofinalSlipCap;
 
-    /// @notice Whether a channel token has an explicit final slip cap configured
-    mapping(address => bool) public isSetChannelFinalslipcap;
+    /// @notice Whether a token has an active fixed final slip cap (channel token or main-pool token)
+    /// @dev Latched to true when a cap is configured (batchSetFinalslipcap) and can only be
+    ///      turned off via batchSetFinalslipcapFlag; the stored cap value is kept meanwhile.
+    mapping(address => bool) public isSetFinalslipcap;
 
-    /// @notice Input struct for batchSetChannelFinalslipcap
-    /// @param indexToken The channel token
+    /// @notice Input struct for batchSetFinalslipcap
+    /// @param indexToken The token (channel token or main-pool token)
     /// @param finalSlipCap The final slip cap in MUTI-scaled units (1e8 = 100%), must be <= 5% (0.05e8);
     ///        0 is allowed and means no slippage
     struct FinalslipcapData {
@@ -763,27 +774,29 @@ contract SlippageControl is Synchron {
         uint256 finalSlipCap;
     }
 
-    /// @notice Batch-set the fixed final slip cap for channel tokens
+    /// @notice Batch-set the fixed final slip cap for channel tokens or main-pool tokens
     /// @dev Only callable by governance. For each entry:
-    ///      - The channel token's pool owner must be whitelisted (isChannelWhitelist) at WRITE time
-    ///        here, and is checked again at READ time in getSlipData; otherwise the entry is skipped.
-    ///        Whitelist the pool owner in MemeData before configuring a cap.
+    ///      - The token must be eligible at WRITE time here, and eligibility is checked again at
+    ///        READ time in getSlipData; otherwise the entry is skipped. Eligible means either its
+    ///        pool owner is whitelisted (isChannelWhitelist, channel tokens — whitelist the owner in
+    ///        MemeData first) or the token is a main-pool token (getCoinType == 1).
     ///      - The cap must be <= 5% (0.05e8 in MUTI-scaled units); otherwise the entry is skipped.
     ///        A cap of 0 is valid and means no slippage is charged for that token.
     ///      - Skipped entries do NOT revert and emit NO event, so failed entries are silent.
-    ///      The stored key is the channel token itself and the isSet flag is latched on first write.
-    /// @param _slipcapData Array of {channel token, final slip cap (MUTI-scaled)}
-    function batchSetChannelFinalslipcap(FinalslipcapData[] calldata _slipcapData) external onlyGov {
+    ///      The stored key is the token itself and the isSet flag is latched on first write; it can
+    ///      only be turned off again via batchSetFinalslipcapFlag.
+    /// @param _slipcapData Array of {token, final slip cap (MUTI-scaled)}
+    function batchSetFinalslipcap(FinalslipcapData[] calldata _slipcapData) external onlyGov {
         uint256 len = _slipcapData.length;
         if(len == 0) revert("empty _slipcapData");
         for(uint256 i = 0; i < len; i++) {
             address _indexToken = _slipcapData[i].indexToken;
-            if(isChannelWhitelist(_indexToken)) {
+            if(isChannelWhitelist(_indexToken) || getCoinType(_indexToken) == 1) {
                 uint256 _finalSlipCap = _slipcapData[i].finalSlipCap;
                 if(_finalSlipCap <= 0.05e8) {
-                    channelIndexTokenTofinalSlipCap[_indexToken] = _finalSlipCap;
-                    if(!isSetChannelFinalslipcap[_indexToken]) isSetChannelFinalslipcap[_indexToken] = true;
-                    emit SetChannelFinalslipcap(_indexToken, _finalSlipCap);
+                    indexTokenTofinalSlipCap[_indexToken] = _finalSlipCap;
+                    if(!isSetFinalslipcap[_indexToken]) isSetFinalslipcap[_indexToken] = true;
+                    emit SetFinalslipcap(_indexToken, _finalSlipCap);
                 }
             }
         }
@@ -826,7 +839,7 @@ contract SlippageControl is Synchron {
     /// @dev Both values are resolved with a SINGLE channel lookup (getChannelMappedTokenPoolInfo).
     ///      For a channel-mapped token a configured channel-pool override wins, otherwise the global
     ///      configuration is used. Whitelisting is NOT required here — it only gates the fixed final
-    ///      slip cap configured via batchSetChannelFinalslipcap.
+    ///      slip cap configured via batchSetFinalslipcap.
     /// @param _indexToken The index / channel token to query
     /// @return multiplier The effective slip cap multiplier in basis points (falls back to the global
     ///         slipCapMultiplier / DEFAULT_SLIP_CAP_MULTIPLIER = 12000 when unset)
@@ -842,6 +855,39 @@ contract SlippageControl is Synchron {
         } else {
             multiplier = getSlipCapMultiplierCache();
             skewRatio = maxSkewRatio;
+        }
+    }
+
+    /// @notice Coin type of a token as registered in CoinData
+    /// @dev 1 = main-pool token (registered in CoinData, includes USDT), 2 = meme/channel token,
+    ///      0 = unknown. Used by the fixed-cap eligibility checks so that main-pool tokens can be
+    ///      configured with a fixed final slip cap as well.
+    /// @param token The token to look up
+    /// @return The coin type (0, 1 or 2)
+    function getCoinType(address token) internal view returns(uint8) {
+        return ICoinData(dataReader.coinData()).getCoinType(token);
+    }
+
+    /// @notice Batch DISABLE the fixed final slip cap flag (isSetFinalslipcap)
+    /// @dev Only callable by governance. This helper can only turn the flag OFF:
+    ///      - Entries whose flag is currently TRUE are set to false, so getSlipData falls back to
+    ///        the normal Layer-1 / skew pricing for that token. The stored cap value
+    ///        (indexTokenTofinalSlipCap) is preserved, so the cap can be re-enabled later by
+    ///        configuring it again via batchSetFinalslipcap.
+    ///      - Entries already at false (and address(0) entries) are skipped silently — the flag is
+    ///        never set to true here.
+    ///      Whether a cap applies at all is still gated at READ time in getSlipData (pool owner
+    ///      whitelisted, or the token is a main-pool token).
+    /// @param _indexTokens Array of tokens whose fixed final slip cap should be disabled
+    function batchSetFinalslipcapFlag(address[] calldata _indexTokens) external onlyGov {
+        uint256 len = _indexTokens.length;
+        if(len == 0) revert("empty _indexTokens");
+        for(uint256 i = 0; i < len; i++) {
+            address _indexToken = _indexTokens[i];
+            // Only a token whose flag is currently TRUE can be disabled
+            if(!isSetFinalslipcap[_indexToken]) continue;
+            isSetFinalslipcap[_indexToken] = false;
+            emit SetFinalslipcapFlag(_indexToken, false);
         }
     }
 }

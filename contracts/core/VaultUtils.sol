@@ -11,6 +11,8 @@ import "./interfaces/IOrderBook.sol";
 import "../upgradeability/Synchron.sol";
 import "../peripherals/interfaces/ITimelock.sol";
 import "./interfaces/IDataReader.sol";
+import "../Pendant/interfaces/ITradingMining.sol";
+import "../Pendant/interfaces/ICoinData.sol";
 
 /**
  * @title VaultUtils
@@ -629,5 +631,134 @@ contract VaultUtils is Synchron, IEventStruct {
         uint256 _baseFee = vault.liquidationFeeUsd();
         _fee = _fee > _baseFee ? _fee : _baseFee;
         return (_fee, vault.usdToTokenMin(_collateralToken, _fee));
+    }
+
+
+    // ***********************************************************************************
+
+    /// @notice TradingMining contract address (address(0) = passthrough disabled)
+    /// @dev Declared after every other state variable so the proxy storage layout stays
+    ///      upgrade-safe: this slot is appended at the end of the existing layout.
+    address public tradingMining;
+
+    /// @notice Emitted when the TradingMining contract address is updated
+    /// @param tradingMining New TradingMining address
+    event SetTradingMining(address indexed tradingMining);
+
+    /// @notice Set the TradingMining contract address
+    /// @dev Only callable by governance. This is NOT an optional integration: the Vault depends on
+    ///      the delta returned by `recordPnl` to settle a decrease, so pointing this at address(0)
+    ///      (or at a contract that does not implement the interface) makes every close and
+    ///      liquidation revert. Configure it once, right after deployment.
+    /// @param _tradingMining TradingMining contract address (must implement ITradingMining)
+    function setTradingMining(address _tradingMining) external onlyGov {
+        tradingMining = _tradingMining;
+        emit SetTradingMining(_tradingMining);
+    }
+
+    /// @notice Passthrough: report a realised PnL (profit or loss) to TradingMining
+    /// @dev Only callable by the vault. TradingMining prices the closing part itself and decides
+    ///      by profit / loss. The Vault needs the returned delta to settle the decrease, so a
+    ///      missing / broken TradingMining makes the call fail (the call to address(0) reverts).
+    /// @param _indexToken Index token of the position
+    /// @param _collateralToken Collateral token of the position
+    /// @param _account Position owner (DER recipient on losses)
+    /// @param _isLong True for a long position
+    /// @param _sizeDelta Size being closed (USD 30 decimals)
+    /// @param _price Execution price used by the Vault for this decrease (USD 30 decimals)
+    /// @return hasProfit True for a profit, false for a loss
+    /// @return adjustedDelta Realised PnL of the closing part (USD 30 decimals, absolute value)
+    /// @return payableUsd Profit payable immediately (USD 30 decimals); any remainder was enqueued
+    function recordPnl(
+        address _indexToken,
+        address _collateralToken,
+        address _account,
+        bool _isLong,
+        uint256 _sizeDelta,
+        uint256 _price
+    ) external returns (bool, uint256, uint256) {
+        _requireVault();
+        return ITradingMining(tradingMining).recordPnl(
+            _indexToken, _collateralToken, _account, _isLong, _sizeDelta, _price
+        );
+    }
+
+    /// @notice Passthrough: report a liquidation to TradingMining
+    /// @dev Only callable by the vault. TradingMining reads the payout base (full collateral, the
+    ///      liquidation fee is not deducted) from the vault position and uses `_poolCredit` to
+    ///      rebuild the pre-settlement water level, because the pool was already credited with
+    ///      `collateral - fees - liquidationFee`.
+    ///      Like recordPnl this is not fire-and-forget: TradingMining must be configured, otherwise
+    ///      the call fails and the liquidation reverts.
+    /// @param _indexToken Index token of the liquidated position
+    /// @param _collateralToken Collateral token of the position
+    /// @param _account Position owner (DER recipient)
+    /// @param _isLong True for a long position
+    /// @param _poolCredit USD value already credited to the pool, 6 decimals
+    ///        (collateral - fees - liquidation fee); converted to token units inside TradingMining
+    function recordLiquidation(
+        address _indexToken,
+        address _collateralToken,
+        address _account,
+        bool _isLong,
+        uint256 _poolCredit
+    ) external {
+        _requireVault();
+        ITradingMining(tradingMining).recordLiquidation(_indexToken, _collateralToken, _account, _isLong, _poolCredit);
+    }
+
+    /// @notice Passthrough: persist the current peak water level as the high watermark
+    /// @dev Called by the Vault after every pool-amount change so a peak that is later lowered
+    ///      (profit payout, queue debt, withdrawal) is never lost (M-15). Writes storage only.
+    ///      The resolved targetToken is passed back as well, so a single call both syncs H and
+    ///      gives the Vault the pool index it needs (saves one dataReader round trip).
+    /// @param _indexToken Index token of the pool whose accounting changed
+    /// @return targetToken Main-pool targetToken resolved from `_indexToken`
+    function syncTrackedLp(address _indexToken) external returns(address) {
+        _requireVault();
+        return ITradingMining(tradingMining).syncTrackedLp(_indexToken);
+    }
+
+    /// @notice Validate the reserved / pool ratio after a reserve or pool-amount change
+    /// @dev Lives here (instead of the Vault) to keep the Vault bytecode small. Reverts directly
+    ///      with "reserve err"; the legacy error codes 50 / 52 are dropped.
+    ///      A main-pool close is exempt: exit paths must never be blocked by the reserve ratio.
+    ///      The caller passes an already-resolved target token (the Vault resolves it before
+    ///      updating its accounting), so no extra resolution is needed here.
+    ///      Reverts when this contract is not wired into the Vault, which is intentional: the
+    ///      Vault must not be able to skip the check.
+    /// @param _indexToken Index token / target token
+    /// @param _collateralToken Collateral token
+    /// @param _isIncrease true = reserve increase (open), false = pool decrease (close)
+    /// @param _multiplier Reserve multiplier (basis 10000), passed by the Vault to save a call
+    function validateReserveRatio(
+        address _indexToken,
+        address _collateralToken,
+        bool _isIncrease,
+        uint256 _multiplier
+    ) external {
+        _requireVault();
+
+        // Persist the water-level peak first: this entry runs on every pool decrease, and the
+        // level may drop right after (payout, queue debt, withdrawal)
+        address tm = tradingMining;
+        if(tm != address(0)) ITradingMining(tm).syncTrackedLp(_indexToken);
+
+        // Main-pool close: skip the reserve check entirely
+        if(!_isIncrease && vault.getCoinType(_indexToken) == 1) {
+            return;
+        }
+
+        uint256 pool = vault.poolAmounts(_indexToken, _collateralToken);
+        uint256 reserved = vault.reservedAmounts(_indexToken, _collateralToken);
+
+        if(reserved > pool * _multiplier / 10000) revert("reserve err");
+    }
+
+    /// @dev Only the Vault may call the TradingMining passthroughs and the reserve-ratio check.
+    ///      Implemented as an internal function (not a modifier) so the check body is emitted once
+    ///      instead of being inlined into every caller.
+    function _requireVault() internal view {
+        if(msg.sender != address(vault)) revert("vault err");
     }
 }
