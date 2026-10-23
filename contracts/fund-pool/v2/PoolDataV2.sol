@@ -69,6 +69,7 @@ contract PoolDataV2 is Synchron, IStruct, ITransferAmountData {
     event SetLockEndTime(address pool, uint256 pid, uint256 time);
     event SetTxRate(address pool, uint256 rate);
     event SetIsResubmit(address user, address pool, uint256 pid, bool isResubmit);
+    event SetIsOpen(bool isOpen);
     event Deposit(DepositEvent dEvent);
     event CompoundToNext(address pool, address user, uint256 pid, uint256 nextPid, bool isAll);
     event TrendsUsers(address pool, address user, uint256 pid, uint256 nextPid);
@@ -274,6 +275,7 @@ contract PoolDataV2 is Synchron, IStruct, ITransferAmountData {
     }
 
     function setIsResubmit(address user, address pool, uint256 pid, bool isResubmit) external {
+        require(isOpen, "not open");
         errContractV2.validateSetIsResubmit(msg.sender, user, pool, pid, isResubmit);
 
         _setIsResubmit(user, pool, pid, isResubmit);
@@ -286,6 +288,7 @@ contract PoolDataV2 is Synchron, IStruct, ITransferAmountData {
         uint256 amount, 
         bool isResubmit
     ) external {
+        require(isOpen, "not open");
         (uint256 value, uint256 outAmount) = errContractV2.validateDeposit(msg.sender, pool, pid, amount, false);
         if(foundState[pool][pid].currFundraisingAmount == 0) {
             foundState[pool][pid].currFundraisingAmount = txInfo[pool].fundraisingAmount;
@@ -294,6 +297,7 @@ contract PoolDataV2 is Synchron, IStruct, ITransferAmountData {
         foundState[pool][pid].actAmount = outAmount;
 
         _deposit(user, pool, pid, amount, value, isResubmit, false);
+
     } 
 
     function mintAndStakeGlp(
@@ -419,6 +423,7 @@ contract PoolDataV2 is Synchron, IStruct, ITransferAmountData {
     }
 
     function claim(address user, address pool, uint256 pid) public {
+        require(isOpen, "not open");
         (uint256 amount, uint256 lessLp) = errContractV2.validateClaim(msg.sender, user, pool, pid);
         
         userInfo[user][pool][pid].isClaim = true;
@@ -773,5 +778,19 @@ contract PoolDataV2 is Synchron, IStruct, ITransferAmountData {
 
     function getAmount(address token, address account) public view returns(uint256) {
         return IERC20(token).balanceOf(account);
+    }
+
+    /// @notice Global switch for the user-facing entry points (deposit / claim / setIsResubmit).
+    /// @dev Defaults to false, i.e. the contract starts stopped: every one of those three calls
+    ///      reverts until governance opens it with setIsOpen(true).
+    bool public isOpen;
+
+    /// @notice Open or close the user-facing entry points (governance only)
+    /// @dev Controls deposit, claim (and therefore batchClaim) and setIsResubmit. The contract
+    ///      starts stopped, so this must be called with true before any of them can be used.
+    /// @param _isOpen true = allow those calls, false = block them
+    function setIsOpen(bool _isOpen) external onlyGov {
+        isOpen = _isOpen;
+        emit SetIsOpen(_isOpen);
     }
 }
