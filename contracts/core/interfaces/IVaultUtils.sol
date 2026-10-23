@@ -63,10 +63,12 @@ interface IVaultUtils is IEventStruct  {
     /// @notice Validate the reserved / pool ratio after a reserve or pool-amount change
     /// @dev Reverts directly with "reserve err" (legacy error codes 50 / 52 are no longer used).
     ///      Closing a main-pool position is exempt, so an exit can never be blocked by the ratio.
+    ///      Read-only (audit L-11): the caller persists the water-level peak before lowering the
+    ///      balance, so this check must not touch storage or call into TradingMining.
     /// @param _indexToken Index token / target token
     /// @param _collateralToken Collateral token
     /// @param _isIncrease true = reserve increase (open), false = pool decrease (close)
-    function validateReserveRatio(address _indexToken, address _collateralToken, bool _isIncrease, uint256 _multiplier) external;
+    function validateReserveRatio(address _indexToken, address _collateralToken, bool _isIncrease, uint256 _multiplier) external view;
 
     // ==================== TradingMining passthrough ====================
 

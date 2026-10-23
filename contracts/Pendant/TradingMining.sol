@@ -7,12 +7,14 @@ import "../core/interfaces/IDataReader.sol";
 import "../core/interfaces/IEventStruct.sol";
 import "./interfaces/ICoinData.sol";
 import "./interfaces/IPhase.sol";
+import "./interfaces/ISlippage.sol";
+import "./interfaces/IChainBlacklist.sol";
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 
 /// @title TradingMining
 /// @notice Trading mining (loss-to-mine) plus a payout queue, merged into one upgradeable contract
-/// @dev Data flow: Vault -> Slippage (pure passthrough) -> TradingMining (this contract, which
+/// @dev Data flow: Vault -> VaultUtils (passthrough) -> TradingMining (this contract, which
 ///      performs every calculation and owns the queue).
 ///      1. Main pools only (CoinData.getCoinType == 1); meme pools / channel pools emit an event
 ///         and return immediately.
@@ -32,12 +34,15 @@ import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 ///         amounts are scaled by 1e12 to DER 18 decimals.
 ///      7. Amount units (quick reference):
 ///         - USD / prices inside the Vault: 30 decimals (converted here via USD_DECIMALS_TO_6)
-///         - USDT balances, queue debt, minimum reserve: 6 decimals
+///         - USDT balances and minimum reserve: 6 decimals
+///         - Queue debt (originalDebt / paid / remaining): the collateral token's own units, the
+///           same unit as Vault.poolAmounts, obtained through IVault.usdToTokenMin. For the main
+///           pools (USDT collateral) the value is numerically identical to 6 decimals.
 ///         - DER balances and payouts: 18 decimals (USDT amounts scaled by DER_SCALE)
 ///      8. PnL pricing belongs to this contract: the Vault passes the closed size and its
 ///         execution price, and this contract calls Phase.getDeltaFor for the same figures the
-///         Vault settles with. The DER payout base is then re-priced for that size at the
-///         slippage-free price, so price impact never enters the mint base.
+///         Vault settles with. The DER payout base is that same realised loss, slippage included
+///         and with no cap, so the base and the water-level credit always agree.
 ///      9. Queue record lifecycle:
 ///         NONE (unused id) -> PENDING (enqueued) -> PARTIAL (paid in part) -> CLEARED (fully paid).
 ///         Only PENDING / PARTIAL ids can be the head.
@@ -57,6 +62,17 @@ contract TradingMining is Synchron {
     uint256 public constant DEFAULT_MIN_RESERVE = 5_000_000e6;
     /// @notice Lower bound accepted by setMinReserve (USDT 6 decimals, 1,000,000)
     uint256 public constant MIN_RESERVE_FLOOR = 1_000_000e6;
+    /// @notice System blacklist contract consulted before every DER payout
+    /// @dev Hard-coded on purpose: it is a chain-level system contract, so there is nothing to
+    ///      govern. Queries are fail-open (see _isBlacklisted), therefore an absent or upgraded
+    ///      contract can never block a close.
+    address public constant BLACKLIST = 0x00000000000000000000000000000000000007eB;
+    /// @notice Skip reason: the funding source cannot cover the payout (balance or allowance)
+    uint8 public constant SKIP_INSUFFICIENT_DER = 0;
+    /// @notice Skip reason: the account is flagged by the blacklist contract
+    uint8 public constant SKIP_BLACKLISTED = 1;
+    /// @notice Skip reason: the blacklist contract could not answer, so the payout is withheld
+    uint8 public constant SKIP_BLACKLIST_UNAVAILABLE = 2;
 
     /// @notice Zone: underwater (trackedLp < 0)
     uint8 public constant ZONE_UNDERWATER = 0;
@@ -90,9 +106,9 @@ contract TradingMining is Synchron {
         address indexToken;         // Index token of the source position
         address collateralToken;    // Debt token
         bool isLong;                // Direction of the source position
-        uint256 originalDebt;       // Original debt
-        uint256 paid;               // Amount already paid
-        uint256 remaining;          // Remaining debt
+        uint256 originalDebt;       // Original debt (collateral token units, = poolAmounts unit)
+        uint256 paid;               // Amount already paid (collateral token units)
+        uint256 remaining;          // Remaining debt (collateral token units)
         uint256 enqueuedAt;         // Enqueue timestamp
         uint8 status;               // 0 none / 1 pending / 2 partial / 3 cleared
     }
@@ -113,8 +129,8 @@ contract TradingMining is Synchron {
         address account;            // Losing trader (DER receiver)
         bytes32 positionKey;        // Position identifier
         address collateralToken;    // Collateral token
-        uint256 realisedLoss;       // Realised price loss before the slippage-free cap (USDT 6 dec)
-        uint256 mintBase;           // Payout base actually used (USDT 6 decimals)
+        uint256 realisedLoss;       // Realised loss at the execution price, slippage included (USDT 6 dec)
+        uint256 mintBase;           // Payout base actually used (USDT 6 decimals); equals realisedLoss
         uint256 minted;             // DER actually transferred (capped by this contract's balance)
         int256 trackedLpBefore;     // Water level before settlement
         int256 trackedLpAfter;      // Water level after settlement
@@ -133,24 +149,24 @@ contract TradingMining is Synchron {
         address account;          // DER receiver
         bytes32 positionKey;      // Source position identifier
         address collateralToken;  // Collateral token (used by the event only)
-        uint256 realisedLoss;     // Realised price loss before the cap (USDT 6 dec; = mintBase on liquidation)
+        uint256 realisedLoss;     // Realised loss at the execution price, slippage included (USDT 6 dec)
         uint256 mintBase;         // Payout base actually used (USDT 6 decimals)
-        uint256 poolCredit;       // Token amount credited to the pool (same unit as poolAmounts,
-                                  // i.e. the collateral token's decimals)
-        bool credited;            // True = the credit above is already booked (liquidation);
-                                  // false = the Vault books it right after the report (loss close)
+        uint256 poolCredit;       // Token amount the Vault credits to the pool right AFTER this
+                                  // report (same unit as poolAmounts, i.e. collateral decimals)
+        bool isLiquidation;       // True = liquidation, false = loss close (event flag only; the
+                                  // Vault always books the credit after reporting, audit L-01)
     }
 
     /// @notice Result of `previewClose` (read-only estimate of a losing close)
     struct LossPreview {
-        uint256 realisedLoss;   // Estimated loss (USDT 6 decimals)
+        uint256 realisedLoss;   // Loss at the settlement price, slippage included (USDT 6 decimals)
         uint256 mintBase;       // Mint base (USDT 6 decimals); equals realisedLoss here
         uint256 rate;           // Average payout per unit of base (DER per USDT)
         uint256 payout;         // DER that would be paid (18 decimals, before the balance cap)
         int256 lpBefore;        // Water level used for the segment split (USDT 6 decimals)
         uint256 hBefore;        // Effective H used for the ratchet segment
         uint8 zone;             // 0 underwater / 1 flat / 2 ratchet (0 when not applicable)
-        uint256 availableDer;   // DER balance of this contract (caps the actual payout)
+        uint256 availableDer;   // min(derSource balance, allowance to this contract); caps the payout
     }
 
     // ==================== Storage (order is fixed, append only) ====================
@@ -192,6 +208,10 @@ contract TradingMining is Synchron {
     mapping(address => bool) public isWithdrawer;
     /// @notice Settlement keeper whitelist; governance may always call settleQueue
     mapping(address => bool) public isKeeper;
+    /// @notice DER funding source (set at initialize, changeable via setDerSource)
+    /// @dev This contract never needs to hold DER: mining payouts are pulled from here with
+    ///      safeTransferFrom, so the source must approve this contract for the DER it will hand out.
+    address public derSource;
 
 
     // ==================== Events ====================
@@ -212,6 +232,8 @@ contract TradingMining is Synchron {
     event RecorderSet(address indexed account, bool allowed);
     /// @notice Treasury address updated
     event TreasurySet(address indexed treasury);
+    /// @notice DER funding source updated (payouts are pulled from it with safeTransferFrom)
+    event DerSourceSet(address indexed derSource);
     /// @notice Governance address updated
     event GovSet(address indexed gov);
     /// @notice Settlement keeper whitelist updated
@@ -224,10 +246,16 @@ contract TradingMining is Synchron {
     event WithdrawerSet(address indexed account, bool allowed);
     /// @notice Non-main-pool call skipped
     event NonMainPoolSkipped(address sender, address indexToken, uint8 coinType);
+    /// @notice Mint skipped because the curve of this pool is not configured yet
+    event CurveNotSet(address indexed targetToken);
     /// @notice Mint record emitted for off-chain auditing
     event MintRecorded(address indexed targetToken, MintRecord record);
     /// @notice This contract's DER balance was insufficient, the transfer was truncated
-    event DerBalanceShortfall(address indexed account, uint256 computed, uint256 paid);
+    /// @notice A DER payout was skipped: nothing was transferred to the trader
+    /// @param account Trader that should have received the DER
+    /// @param computed Payout the curve allowed (DER 18 decimals)
+    /// @param reason Why nothing was sent, see SKIP_* below
+    event DerPayoutSkipped(address indexed account, uint256 computed, uint8 reason);
     /// @notice DER tokens transferred out
     event DerWithdrawn(address indexed to, uint256 amount);
     /// @notice A debt record was enqueued
@@ -271,9 +299,9 @@ contract TradingMining is Synchron {
     }
 
     /// @dev Settlement caller: governance or a whitelisted keeper.
-    ///      It cannot be limited to the reporter: Slippage never triggers settlement, so a
-    ///      reporter-only rule would leave the queue growing forever. Keepers cannot report PnL,
-    ///      so leaking a keeper key can only move pool cash to queue creditors.
+    ///      It cannot be limited to the reporter: the VaultUtils passthrough never triggers
+    ///      settlement, so a reporter-only rule would leave the queue growing forever. Keepers
+    ///      cannot report PnL, so leaking a keeper key can only move pool cash to queue creditors.
     modifier onlyKeeper() {
         if(msg.sender != gov && !isKeeper[msg.sender]) revert("keeper err");
         _;
@@ -287,21 +315,26 @@ contract TradingMining is Synchron {
     /// @param _derToken DerToken address (must not be zero, cannot be changed afterwards)
     /// @param _usdt USDT address (must not be zero, cannot be changed afterwards)
     /// @param _treasury Treasury address for idle-fund transfers (must not be zero, changeable via setTreasury)
-    function initialize(address _derToken, address _usdt, address _treasury) external {
+    /// @param _derSource DER funding source for mining payouts (must not be zero, changeable via
+    ///        setDerSource). It must approve this contract, otherwise the payout cannot be pulled.
+    function initialize(address _derToken, address _usdt, address _treasury, address _derSource) external {
         if(initialized) revert("has initialized");
         if(_derToken == address(0)) revert("derToken err");
         if(_usdt == address(0)) revert("usdt err");
         if(_treasury == address(0)) revert("treasury err");
+        if(_derSource == address(0)) revert("derSource err");
 
         initialized = true;
         gov = msg.sender;
         derToken = _derToken;
         usdt = _usdt;
         treasury = _treasury;
+        derSource = _derSource;
         minReserve[_usdt] = DEFAULT_MIN_RESERVE;
 
         emit Initialized(_derToken, _usdt);
         emit TreasurySet(_treasury);
+        emit DerSourceSet(_derSource);
         emit MinReserveSet(_usdt, 0, DEFAULT_MIN_RESERVE);
     }
 
@@ -319,6 +352,16 @@ contract TradingMining is Synchron {
         if(_treasury == address(0)) revert("treasury err");
         treasury = _treasury;
         emit TreasurySet(_treasury);
+    }
+
+    /// @notice Set the DER funding source used for mining payouts (governance only)
+    /// @dev Payouts are pulled with safeTransferFrom, so the new source must approve this contract
+    ///      BEFORE the next close. Switching it does not move any DER by itself.
+    /// @param _derSource New source address (must not be zero)
+    function setDerSource(address _derSource) external onlyGov {
+        if(_derSource == address(0)) revert("derSource err");
+        derSource = _derSource;
+        emit DerSourceSet(_derSource);
     }
 
     /// @notice Set the minimum reserve of a main pool (governance only)
@@ -396,7 +439,7 @@ contract TradingMining is Synchron {
 
     /// @notice Grant or revoke a reporter (governance only)
     /// @dev The reporter is the only address allowed to call recordPnl / recordLiquidation.
-    ///      In production it must be the Slippage passthrough contract, which is in turn
+    ///      In production it must be the VaultUtils passthrough contract, which is in turn
     ///      restricted to the Vault; never grant it to an EOA, since a reporter can trigger DER
     ///      payouts. Queue settlement uses the separate keeper whitelist (setKeeper).
     /// @param _recorder Reporter address
@@ -460,8 +503,8 @@ contract TradingMining is Synchron {
     /// @notice Report the realised PnL of a position close
     /// @dev Prices the closing part with the same Phase call the Vault uses (`getDeltaFor` at the
     ///      execution price), so `adjustedDelta` returned here is exactly the value the Vault
-    ///      settles. On a loss the DER payout base is re-priced for the same `_sizeDelta` at the
-    ///      Vault's slippage-free price, so price impact is excluded (PRD: price loss only).
+    ///      settles. On a loss the DER payout base is that same realised loss at the execution
+    ///      price (slippage included, no cap), so the base and the water-level credit agree.
     ///      Profitable closes are paid when the pool has cash and the queue is empty; otherwise the
     ///      whole profit is enqueued. Non-main pools emit NonMainPoolSkipped and get the full delta
     ///      back, so the Vault keeps its legacy behaviour for meme / channel pools.
@@ -498,10 +541,7 @@ contract TradingMining is Synchron {
                 targetToken, _account, key, _indexToken, _collateralToken, _isLong, adjustedDelta
             );
         } else {
-            _settleLoss(
-                targetToken, _account, key, _indexToken, _collateralToken, _isLong,
-                p, _sizeDelta, adjustedDelta
-            );
+            _settleLoss(targetToken, _account, key, _collateralToken, adjustedDelta);
             payableUsd = 0;
         }
     }
@@ -514,29 +554,25 @@ contract TradingMining is Synchron {
     /// @param _targetToken Main-pool targetToken
     /// @param _account DER receiver
     /// @param _key Position identifier
-    /// @param _indexToken Index token
     /// @param _collateralToken Collateral token
-    /// @param _isLong true for a long position
-    /// @param _p Live position
-    /// @param _sizeDelta Size being closed (USD 30 decimals)
-    /// @param _adjustedDelta Realised loss (USD 30 decimals)
+    /// @param _adjustedDelta Realised loss at the execution price, slippage included (USD 30)
     function _settleLoss(
         address _targetToken,
         address _account,
         bytes32 _key,
-        address _indexToken,
         address _collateralToken,
-        bool _isLong,
-        IEventStruct.Position memory _p,
-        uint256 _sizeDelta,
         uint256 _adjustedDelta
     ) internal {
-        uint256 mintBase = _noSlipMintBase(_indexToken, _p, _isLong, _sizeDelta);
+        // Payout base = the realised loss at the execution price, i.e. slippage included.
+        // Slippage is treated as a genuine loss: it is neither stripped nor capped against a
+        // slippage-free figure, so a trader who pays price impact is compensated for it. This also
+        // keeps the base and the water-level credit on exactly the same amount.
+        uint256 mintBase = _adjustedDelta / USD_DECIMALS_TO_6;
         if(mintBase == 0) return;
 
         _mint(MintRequest(
             _targetToken, _account, _key, _collateralToken,
-            _adjustedDelta / USD_DECIMALS_TO_6, mintBase,
+            mintBase, mintBase,
             IVault(vault).usdToTokenMin(_collateralToken, _adjustedDelta), false
         ));
     }
@@ -563,31 +599,6 @@ contract TradingMining is Synchron {
         adjustedDelta = _sizeDelta * delta / _p.size;
     }
 
-    /// @dev Payout base of the closing part at the Vault's slippage-free exit price
-    /// @dev Scoping to `_sizeDelta` is what removes price impact on a partial close: a
-    ///      whole-position cap would always exceed this close and the min would never bind.
-    /// @param _indexToken Index token
-    /// @param _p Live position
-    /// @param _isLong true for a long position
-    /// @param _sizeDelta Size being closed (USD 30 decimals)
-    /// @return Mint base (USDT 6 decimals); 0 when the price moved in the trader's favour
-    function _noSlipMintBase(
-        address _indexToken,
-        IEventStruct.Position memory _p,
-        bool _isLong,
-        uint256 _sizeDelta
-    ) internal view returns (uint256) {
-        uint256 noSlipPrice = _isLong
-            ? IVault(vault).getMinPrice(_indexToken)
-            : IVault(vault).getMaxPrice(_indexToken);
-
-        (, uint256 delta) = IPhase(IVault(vault).phase()).getDeltaFor(
-            _indexToken, _p.size, _p.averagePrice, _isLong, _p.lastIncreasedTime, noSlipPrice
-        );
-
-        return _sizeDelta * delta / _p.size / USD_DECIMALS_TO_6;
-    }
-
     /// @dev Pay a profit now, or enqueue the whole amount when cash is short or the queue is busy
     /// @param _targetToken Main-pool targetToken
     /// @param _account Profit owner
@@ -606,7 +617,10 @@ contract TradingMining is Synchron {
         bool _isLong,
         uint256 _adjustedDelta
     ) internal returns (uint256 payableUsd) {
-        uint256 profit = _adjustedDelta / USD_DECIMALS_TO_6;
+        // Queue debt is denominated in the collateral token's own units (the same unit as
+        // poolAmounts), so convert through the Vault instead of assuming USDT has 6 decimals
+        // (audit L-03).
+        uint256 profit = IVault(vault).usdToTokenMin(_collateralToken, _adjustedDelta);
         if(profit == 0) return _adjustedDelta;
 
         // persist the peak BEFORE this call can lower the level. Both branches do:
@@ -627,14 +641,15 @@ contract TradingMining is Synchron {
     /// @notice Report a liquidation
     /// @dev The payout base is the full lost collateral (the liquidation fee is not deducted),
     ///      read from the Vault position before it is deleted. The Vault credits
-    ///      `collateral - fees - liquidationFee` to the pool BEFORE calling this function, so the
-    ///      pre-settlement water level must be derived from `_poolCredit`, not from the payout
-    ///      base. Liquidations are not subject to any hold-time rule.
+    ///      `collateral - fees - liquidationFee` to the pool right AFTER this call (audit L-01), so
+    ///      the credit is still pending here: the live level is the pre-settlement one and
+    ///      `_poolCredit` only shifts the post-settlement level.
+    ///      Liquidations are not subject to any hold-time rule.
     /// @param _indexToken Index token of the position
     /// @param _collateralToken Collateral token
     /// @param _account Position owner (DER receiver)
     /// @param _isLong true for a long position
-    /// @param _poolCredit USD value the Vault credited to the pool before this report, in 6
+    /// @param _poolCredit USD value the Vault credits to the pool right AFTER this report, in 6
     ///        decimals (converted to the collateral token's units inside)
     function recordLiquidation(
         address _indexToken,
@@ -650,9 +665,10 @@ contract TradingMining is Synchron {
         uint256 mintBase = IVault(vault).getPositionFrom(key).collateral / USD_DECIMALS_TO_6;
         if(mintBase == 0) return;
 
-        // Liquidation: the Vault credited the remaining collateral (net of fees) before reporting.
+        // Liquidation: the Vault reports BEFORE crediting the pool (audit L-01), so the credit is
+        // still pending here and is flagged as a liquidation for the event only.
         // _poolCredit is a USD value in 6 decimals; convert it to the collateral token's units
-        // (same unit as poolAmounts) with the same helper the Vault used when crediting.
+        // (same unit as poolAmounts) with the same helper the Vault uses when crediting.
         if(_poolCredit > mintBase) _poolCredit = mintBase;
         uint256 creditTokens = IVault(vault).usdToTokenMin(_collateralToken, _poolCredit * USD_DECIMALS_TO_6);
         _mint(MintRequest(
@@ -675,7 +691,8 @@ contract TradingMining is Synchron {
     /// @param _indexToken Main-pool index token (used to resolve targetToken)
     /// @param _maxCount Maximum number of records handled in this call
     /// @return processed Number of records handled (including partial payments)
-    /// @return paidTotal Total amount paid in this call (USDT 6 decimals)
+    /// @return paidTotal Total amount paid in this call (collateral token units, the same unit as
+    ///         Vault.poolAmounts; numerically 6 decimals for USDT collateral)
     function settleQueue(address _indexToken, uint256 _maxCount)
         external
         onlyKeeper
@@ -707,22 +724,33 @@ contract TradingMining is Synchron {
             if(cash == 0) break;
             uint256 pay = r.remaining < cash ? r.remaining : cash;
 
-            // Pay the creditor through Vault.transferOut (decreases the pool balance)
-            IVault(vault).transferOut(targetToken, usdt, r.account, pay);
-            cash -= pay;
-
+            // CEI: apply every state change BEFORE the external transfer, so a callback during the
+            // payout (token hook or Vault side effects) observes a consistent queue (audit L-06)
             r.paid += pay;
             r.remaining -= pay;
             cfg.totalOutstanding -= pay;
             cfg.totalPaid += pay;
             paidTotal += pay;
             processed += 1;
+            cash -= pay;
 
             if(r.remaining == 0) {
-                // Fully paid -> mark it cleared and continue with the next record
                 r.status = STATUS_CLEARED;
                 cfg.openCount -= 1;
-                emit Repaid(targetToken, id, r.account, r.collateralToken, pay, r.paid, 0, STATUS_CLEARED);
+            } else {
+                r.status = STATUS_PARTIAL;
+            }
+
+            // Pay the creditor through Vault.transferOut (decreases the pool balance)
+            IVault(vault).transferOut(targetToken, usdt, r.account, pay);
+
+            emit Repaid(
+                targetToken, id, r.account, r.collateralToken,
+                pay, r.paid, r.remaining, r.status
+            );
+
+            if(r.remaining == 0) {
+                // Fully paid -> continue with the next record
                 id++;
                 continue;
             }
@@ -731,8 +759,6 @@ contract TradingMining is Synchron {
             // processedID marks the last FULLY handled id and the next batch starts at
             // processedID + 1, so it must stay at id - 1: writing `id` here would advance the
             // start past this record and the remaining debt could never be paid.
-            r.status = STATUS_PARTIAL;
-            emit Repaid(targetToken, id, r.account, r.collateralToken, pay, r.paid, r.remaining, STATUS_PARTIAL);
             processedID[targetToken] = id - 1;
             emit QueueSettled(targetToken, processed, paidTotal, id, cfg.totalOutstanding);
             return (processed, paidTotal);
@@ -760,7 +786,7 @@ contract TradingMining is Synchron {
     ///      reserve and any unpaid queue debt are preserved. Reverts on zero amount, no excess,
     ///      or an amount above the cap.
     /// @param _indexToken Main-pool index token
-    /// @param _amount Amount to transfer (USDT 6 decimals)
+    /// @param _amount Amount to transfer (collateral token units, = poolAmounts unit)
     function withdrawExcess(address _indexToken, uint256 _amount) external onlyWithdrawer {
         if(_amount == 0) revert("amount err");
 
@@ -771,7 +797,7 @@ contract TradingMining is Synchron {
     /// @dev Same constraints as withdrawExcess. After the call the pool balance equals
     ///      minReserve[targetToken] + totalOutstanding.
     /// @param _indexToken Main-pool index token
-    /// @return amount Transferred amount (USDT 6 decimals)
+    /// @return amount Transferred amount (collateral token units, = poolAmounts unit)
     function withdrawAllExcess(address _indexToken) external onlyWithdrawer returns (uint256 amount) {
         (, amount) = _transferExcess(_indexToken, 0, true);
     }
@@ -786,7 +812,7 @@ contract TradingMining is Synchron {
     /// @param _amount Requested amount (ignored when _all is true)
     /// @param _all True = transfer the whole excess instead of _amount
     /// @return targetToken Resolved main-pool targetToken
-    /// @return amount Transferred amount (USDT 6 decimals)
+    /// @return amount Transferred amount (collateral token units, = poolAmounts unit)
     function _transferExcess(address _indexToken, uint256 _amount, bool _all)
         internal
         returns (address targetToken, uint256 amount)
@@ -811,11 +837,14 @@ contract TradingMining is Synchron {
 
     /// @dev Pool cash and the amount locked by the reserve plus the unpaid queue debt
     /// @param targetToken Main-pool targetToken
-    /// @return cash Current pool balance (USDT 6 decimals)
-    /// @return locked Reserve + unpaid queue debt (USDT 6 decimals)
+    /// @return cash Current pool balance (collateral token units, = poolAmounts unit)
+    /// @return locked Reserve (USDT 6 decimals) + unpaid queue debt (collateral token units)
     function _poolSnapshot(address targetToken) internal view returns (uint256 cash, uint256 locked) {
         cash = IVault(vault).poolAmounts(targetToken, usdt);
-        // Neither the minimum reserve nor the unpaid queue debt may be transferred out
+        // Neither the minimum reserve nor the unpaid queue debt may be transferred out.
+        // minReserve is stored in USDT 6 decimals while the queue debt uses the collateral token's
+        // units; main pools are USDT-collateralised, so the two are numerically identical. If a
+        // non-6-decimal collateral is ever enabled here, minReserve must be converted as well.
         locked = minReserve[targetToken] + queueConfigs[targetToken].totalOutstanding;
     }
 
@@ -823,7 +852,8 @@ contract TradingMining is Synchron {
 
     /// @notice Unpaid queue debt
     /// @param _targetToken Main-pool targetToken
-    /// @return Sum of the remaining debt of every open queue record (USDT 6 decimals)
+    /// @return Sum of the remaining debt of every open queue record (collateral token units, the
+    ///         same unit as Vault.poolAmounts; numerically 6 decimals for USDT collateral)
     function getOutstanding(address _targetToken) public view returns(uint256) {
         return queueConfigs[_targetToken].totalOutstanding;
     }
@@ -834,7 +864,7 @@ contract TradingMining is Synchron {
     ///      non-main pool, or when the pool does not exceed the reserve plus unpaid queue debt.
     ///      Read-only helper, never emits NonMainPoolSkipped.
     /// @param _indexToken Main-pool index token
-    /// @return amount Transferable amount (USDT 6 decimals)
+    /// @return amount Transferable amount (collateral token units, = poolAmounts unit)
     function getWithdrawableAmount(address _indexToken) external view returns (uint256 amount) {
         if(_getCoinType(_indexToken) != 1) return 0;
 
@@ -849,7 +879,9 @@ contract TradingMining is Synchron {
     /// @dev Read live on every call; nothing is stored. A negative value means the unpaid queue
     ///      debt exceeds the pool balance, which puts the curve in the underwater zone.
     /// @param _targetToken Main-pool targetToken
-    /// @return Water level (USDT 6 decimals), signed
+    /// @return Water level, signed: poolAmounts - unpaid queue debt. Both terms use the collateral
+    ///         token's units, which equal USDT 6 decimals for the (USDT-collateralised) main pools
+    ///         and therefore compare directly with threshold / decayS
     function getTrackedLp(address _targetToken) public view returns(int256) {
         uint256 cash = IVault(vault).poolAmounts(_targetToken, usdt);
         return int256(cash) - int256(queueConfigs[_targetToken].totalOutstanding);
@@ -913,14 +945,18 @@ contract TradingMining is Synchron {
     }
 
     /// @notice Preview the DER payout of a close before it is submitted (loss branch only)
-    /// @dev Mirrors the loss branch of `recordPnl`, driven by the close size:
-    ///      1. price loss of `_sizeDelta` at the Vault's slippage-free exit price, capped by the
-    ///         remaining collateral (the Vault cannot report a larger delta)
-    ///      2. mint base = that loss (already slippage free)
-    ///      3. payout = _computeMint(mint base, current level, effective H)
-    ///      Read-only: nothing is stored and no DER is moved. Both the preview and the report use
-    ///      the same `_sizeDelta` scoping and the same slippage-free price, so the result matches
-    ///      what the close will mint, up to price movement between the call and the execution.
+    /// @dev Mirrors the loss branch of `recordPnl` step for step, including the price source:
+    ///      1. exit price from the SAME helper the Vault settles with (getDecreaseSlipPrice), so
+    ///         slippage is included exactly as it will be at execution
+    ///      2. delta from the SAME Phase.getDeltaFor call `recordPnl` uses, scaled by
+    ///         `_sizeDelta / size`; a favourable move returns 0
+    ///      3. mint base = that realised loss, capped by the remaining collateral
+    ///      4. payout = _computeMint(mint base, current level, effective H)
+    ///      Read-only: nothing is stored and no DER is moved.
+    ///      WARNING: this is an ESTIMATE taken at the moment of the call. The actual payout is
+    ///      priced at execution time, using the price and the pool level that exist in the block
+    ///      where the close is settled, so the minted amount can differ. Integrators must present
+    ///      it as a preview ("subject to the execution price"), never as a guaranteed payout.
     /// @param _indexToken Index token of the position
     /// @param _collateralToken Collateral token
     /// @param _account Position owner
@@ -946,14 +982,24 @@ contract TradingMining is Synchron {
         if(pos.size == 0) return p;
         if(_sizeDelta > pos.size) _sizeDelta = pos.size;
 
-        p.realisedLoss = _noSlipLossBySize(_indexToken, pos.averagePrice, _sizeDelta, _isLong);
+        // Same price the Vault will settle at: slippage included
+        (, uint256 exitPrice,) = ISlippage(IVault(vault).slippage()).getDecreaseSlipPrice(
+            _indexToken, _sizeDelta, _isLong
+        );
+
+        // Same delta source as _pnlDelta, so the direction and the amount match the report
+        (bool hasProfit, uint256 delta) = IPhase(IVault(vault).phase()).getDeltaFor(
+            _indexToken, pos.size, pos.averagePrice, _isLong, pos.lastIncreasedTime, exitPrice
+        );
+        if(hasProfit) return p;
+
+        p.realisedLoss = _sizeDelta * delta / pos.size / USD_DECIMALS_TO_6;
 
         // The Vault cannot report a delta larger than the remaining collateral
         uint256 collateral6 = pos.collateral / USD_DECIMALS_TO_6;
         if(p.realisedLoss > collateral6) p.realisedLoss = collateral6;
         if(p.realisedLoss == 0) return p;
 
-        // Measured at the slippage-free exit price, so no additional cap is needed
         p.mintBase = p.realisedLoss;
 
         // Nothing is booked yet, so the pre-settlement level is the current level
@@ -962,38 +1008,9 @@ contract TradingMining is Synchron {
         p.zone = _zoneOf(p.lpBefore, c.threshold);
         p.payout = _computeMint(p.mintBase, p.lpBefore, p.hBefore, c);
         p.rate = p.payout / (p.mintBase * DER_SCALE);
-        // The payout above is what the curve allows; the transfer is capped by this balance
-        p.availableDer = IERC20(derToken).balanceOf(address(this));
-    }
-
-    /// @dev Price loss of `_sizeDelta` at the Vault's slippage-free exit price
-    /// @param _indexToken Index token
-    /// @param _averagePrice Position entry price (USD 30 decimals)
-    /// @param _sizeDelta Size being closed (USD 30 decimals)
-    /// @param _isLong true for a long position
-    /// @return realisedLoss Loss in USDT 6 decimals; 0 when the price moved in the trader's favour
-    function _noSlipLossBySize(
-        address _indexToken,
-        uint256 _averagePrice,
-        uint256 _sizeDelta,
-        bool _isLong
-    ) internal view returns (uint256 realisedLoss) {
-        uint256 exitPrice = _isLong
-            ? IVault(vault).getMinPrice(_indexToken)
-            : IVault(vault).getMaxPrice(_indexToken);
-
-        uint256 lossUsd;
-        if(_isLong) {
-            if(_averagePrice > exitPrice) {
-                lossUsd = _sizeDelta * (_averagePrice - exitPrice) / _averagePrice;
-            }
-        } else {
-            if(exitPrice > _averagePrice) {
-                lossUsd = _sizeDelta * (exitPrice - _averagePrice) / _averagePrice;
-            }
-        }
-
-        realisedLoss = lossUsd / USD_DECIMALS_TO_6;
+        // The payout above is what the curve allows; the transfer is capped by whichever is smaller,
+        // the source balance or the allowance this contract was granted
+        p.availableDer = _availableDer();
     }
 
     /// @notice Persist the current peak water level as the high watermark
@@ -1114,7 +1131,7 @@ contract TradingMining is Synchron {
     /// @param _account Creditor
     /// @param _positionKey Source position identifier
     /// @param _collateralToken Debt token
-    /// @param _debtAmount Debt amount (USDT 6 decimals)
+    /// @param _debtAmount Debt amount (collateral token units, the same unit as poolAmounts)
     /// @return id New queue id
     function _enqueue(
         address _targetToken,
@@ -1222,21 +1239,80 @@ contract TradingMining is Synchron {
         }
     }
 
+    /// @dev Blacklist verdict for a payout, from the system contract
+    /// @dev Fail-CLOSED on the payout, but never blocking the close: the DER is only sent when both
+    ///      sides answered AND neither is flagged. An unreachable, upgraded or mis-addressed
+    ///      contract withholds the reward instead of bypassing the check, and since withholding
+    ///      means "transfer nothing" it needs no revert, so the close always completes.
+    ///      A low-level staticcall is used instead of try/catch: try/catch does NOT cover a return
+    ///      data decoding failure, so an address without code would revert the whole close.
+    /// @param _account Trader address
+    /// @return blocked true = do NOT pay (flagged, or the answer is unusable)
+    /// @return answered false = at least one side could not give a usable answer
+    function _blacklistQuery(address _account) internal view returns (bool blocked, bool answered) {
+        (bool toBlocked, bool toAnswered) = _blacklistFlagged(
+            abi.encodeWithSelector(IChainBlacklist.isBlacklistTxTo.selector, _account)
+        );
+        // Short-circuit: once the payout is blocked there is no need to ask the other side
+        if(toBlocked) return (true, toAnswered);
+
+        (bool fromBlocked, bool fromAnswered) = _blacklistFlagged(
+            abi.encodeWithSelector(IChainBlacklist.isBlacklistTxFrom.selector, _account)
+        );
+        if(fromBlocked) return (true, fromAnswered);
+
+        // Clean only when BOTH answers were usable
+        return (false, toAnswered && fromAnswered);
+    }
+
+    /// @dev Single blacklist query. Fail-CLOSED on the payout side but never reverting: a query
+    ///      that cannot be answered withholds the DER instead of bypassing the check, yet it still
+    ///      lets the close go through (nothing is transferred, so no revert is needed).
+    /// @param _data Pre-encoded call to the blacklist contract
+    /// @return flagged true = do NOT pay (flagged, or the answer is unusable)
+    /// @return answered false = the contract could not give a usable answer
+    function _blacklistFlagged(bytes memory _data) internal view returns (bool flagged, bool answered) {
+        (bool ok, bytes memory ret) = BLACKLIST.staticcall(_data);
+        // ok == false: reverted. ret.length < 32: no code at the address, or a short answer
+        if(!ok || ret.length < 32) return (true, false);
+
+        // Read the raw word instead of abi.decode(ret, (bool)): decode reverts on any value other
+        // than 0/1, which would fail the whole close on a malformed or upgraded answer
+        uint256 value;
+        assembly {
+            value := mload(add(ret, 32))
+        }
+
+        return (value != 0, true);
+    }
+
+    /// @dev DER this contract can actually pull from derSource right now
+    /// @return available min(balance held by derSource, allowance granted to this contract)
+    function _availableDer() internal view returns (uint256 available) {
+        available = IERC20(derToken).balanceOf(derSource);
+        uint256 allowance_ = IERC20(derToken).allowance(derSource, address(this));
+        if(available > allowance_) available = allowance_;
+    }
+
     /// @dev Pay out DER and update H, then emit the record
     /// @param _req Payout request (target token, receiver, position, payout base and pool credit)
     function _mint(MintRequest memory _req) internal {
         address targetToken = _req.targetToken;
         CurveParams memory c = curveParams[targetToken];
-        if(c.flatRate == 0) revert("curve not set");
+        // Mining is an add-on incentive: an unconfigured curve must never block a close or a
+        // liquidation. Emit and skip instead of reverting (audit H-04).
+        if(c.flatRate == 0) {
+            emit CurveNotSet(targetToken);
+            return;
+        }
 
-        // The pool credit may already be booked (liquidation) or still pending (loss close), so it
-        // shifts either the pre-settlement or the post-settlement level:
-        // - loss close:  lpBefore = current,             lpAfter = current + poolCredit
-        // - liquidation: lpBefore = current - poolCredit, lpAfter = current
+        // The Vault always reports BEFORE crediting the pool (audit L-01), so the credit is still
+        // pending for both paths and only shifts the post-settlement level:
+        //   lpBefore = current, lpAfter = current + poolCredit
         int256 lpNow = getTrackedLp(targetToken);
         int256 lpCredit = int256(_req.poolCredit);
-        int256 lpBefore = _req.credited ? lpNow - lpCredit : lpNow;
-        int256 lpAfter = _req.credited ? lpNow : lpNow + lpCredit;
+        int256 lpBefore = lpNow;
+        int256 lpAfter = lpNow + lpCredit;
 
         // PRD 2.1: H must follow every trackedLp change. Sync it with the pre-settlement level
         // first (fees / funding may have pushed the level up since the last report), use the
@@ -1245,17 +1321,28 @@ contract TradingMining is Synchron {
 
         uint256 payout = _computeMint(_req.mintBase, lpBefore, hBefore, c);
 
-        // Actual payout: transfer from this contract's DER balance (DER is minted externally in
-        // advance and transferred in; mint is no longer called here)
+        // Actual payout: pulled from the funding source with safeTransferFrom. This contract does
+        // not hold DER, so the source must both hold the tokens AND approve this contract.
+        // All-or-nothing by design: the trader either receives the full payout or nothing at all.
+        // A partial transfer is never sent, because a dust amount is worse than a clean skip for
+        // both accounting and the trader.
+        // The blacklist is fail-CLOSED on the payout: only an answered-and-clean verdict pays out.
+        // A flagged account OR an unusable answer withholds the DER, and the reason tells the two
+        // apart. Withholding never reverts, so the close always goes through.
         uint256 actual;
         if(payout > 0) {
-            uint256 balance = IERC20(derToken).balanceOf(address(this));
-            actual = payout > balance ? balance : payout;
-            if(actual > 0) {
-                IERC20(derToken).safeTransfer(_req.account, actual);
-            }
-            if(actual < payout) {
-                emit DerBalanceShortfall(_req.account, payout, actual);
+            (bool blocked, bool answered) = _blacklistQuery(_req.account);
+
+            if(blocked) {
+                emit DerPayoutSkipped(
+                    _req.account, payout,
+                    answered ? SKIP_BLACKLISTED : SKIP_BLACKLIST_UNAVAILABLE
+                );
+            } else if(_availableDer() < payout) {
+                emit DerPayoutSkipped(_req.account, payout, SKIP_INSUFFICIENT_DER);
+            } else {
+                actual = payout;
+                IERC20(derToken).safeTransferFrom(derSource, _req.account, actual);
             }
         }
 
@@ -1278,9 +1365,10 @@ contract TradingMining is Synchron {
         // weighted by the segment amounts; a DER balance cap is not reflected here
         r.rate = _req.mintBase > 0 ? payout / (_req.mintBase * DER_SCALE) : 0;
         r.zone = _zoneOf(lpBefore, c.threshold);
-        // The credit timing is exactly the path discriminator: only a liquidation books the
-        // credit before reporting
-        r.isLiquidation = _req.credited;
+        // Pure path flag for the event. The credit timing is NOT a discriminator any more: the
+        // Vault reports before crediting on both paths (audit L-01), so liquidation and loss close
+        // only differ in the payout base, not in when the pool is credited.
+        r.isLiquidation = _req.isLiquidation;
 
         emit MintRecorded(targetToken, r);
     }

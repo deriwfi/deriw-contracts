@@ -725,6 +725,11 @@ contract VaultUtils is Synchron, IEventStruct {
     ///      A main-pool close is exempt: exit paths must never be blocked by the reserve ratio.
     ///      The caller passes an already-resolved target token (the Vault resolves it before
     ///      updating its accounting), so no extra resolution is needed here.
+    ///      Read-only by design (audit L-11): the water-level peak is persisted by
+    ///      _decreasePoolAmount BEFORE it lowers the balance, which is the only moment that
+    ///      matters. Syncing again here would run after the drop (useless) and on the open path
+    ///      (the pool is unchanged), while adding an external call that can revert and thereby
+    ///      block a close.
     ///      Reverts when this contract is not wired into the Vault, which is intentional: the
     ///      Vault must not be able to skip the check.
     /// @param _indexToken Index token / target token
@@ -736,13 +741,8 @@ contract VaultUtils is Synchron, IEventStruct {
         address _collateralToken,
         bool _isIncrease,
         uint256 _multiplier
-    ) external {
+    ) external view {
         _requireVault();
-
-        // Persist the water-level peak first: this entry runs on every pool decrease, and the
-        // level may drop right after (payout, queue debt, withdrawal)
-        address tm = tradingMining;
-        if(tm != address(0)) ITradingMining(tm).syncTrackedLp(_indexToken);
 
         // Main-pool close: skip the reserve check entirely
         if(!_isIncrease && vault.getCoinType(_indexToken) == 1) {

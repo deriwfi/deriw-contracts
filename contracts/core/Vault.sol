@@ -509,10 +509,13 @@ contract Vault is Synchron, ReentrancyGuard, IEventStruct {
         position.reserveAmount -= reserveDelta;
         _decreaseReservedAmount(_indexToken, _collateralToken, reserveDelta);
         
-        (uint256 usdOut, uint256 usdOutAfterFee) = _reduceCollateral(rtl);
+        (uint256 usdOut, uint256 usdOutAfterFee, uint256 fee) = _reduceCollateral(rtl);
 
 
-        dData.fee = usdOut - usdOutAfterFee;
+        // Report the fee that was actually charged. It cannot be derived from usdOut - usdOutAfterFee:
+        // when the payout cannot cover the fee it is taken from the remaining collateral and
+        // usdOutAfterFee stays equal to usdOut (see _reduceCollateral).
+        dData.fee = fee;
         dData.usdOutAfterFee = usdOutAfterFee;
         dData.averagePrice = position.averagePrice;
         dData.collateral = collateral;
@@ -659,15 +662,18 @@ contract Vault is Synchron, ReentrancyGuard, IEventStruct {
                     _liquidatePositionFor(_indexToken, key, _collateralToken, _feeReceiver, _liquidationFeeUsd);
                 }
                 remainingCollateral -= _liquidationFeeUsd;
-                _increasePoolAmount(_indexToken, _collateralToken, usdToTokenMin(_collateralToken, remainingCollateral));
 
                 // Trading mining: the payout base is the full collateral (read by TradingMining
-                // from the vault position), but the water level must use the amount actually
+                // from the vault position), but the water level must use the amount about to be
                 // credited to the pool, i.e. collateral - fees - liquidation fee.
                 // Passed as a USD value in 6 decimals; TradingMining converts it to token units.
+                // Reported BEFORE _increasePoolAmount so the mint prices the pre-settlement level
+                // (audit L-01): crediting first would sync H with the already-raised balance.
                 vaultUtils.recordLiquidation(
                     _indexToken, _collateralToken, _account, _isLong, remainingCollateral / 1e24
                 );
+
+                _increasePoolAmount(_indexToken, _collateralToken, usdToTokenMin(_collateralToken, remainingCollateral));
             }
 
             _decreaseReservedAmount(_indexToken, _collateralToken, position.reserveAmount);
@@ -946,7 +952,7 @@ contract Vault is Synchron, ReentrancyGuard, IEventStruct {
     ///         re-pricing the whole position size (DER-08).
     function _reduceCollateral(
         RedCollateral memory rtl
-    ) private returns (uint256, uint256) {
+    ) private returns (uint256, uint256, uint256) {
         bytes32 key = getPositionKey(rtl._account, rtl._collateralToken, rtl._indexToken, rtl._isLong);
         Position storage position = positions[key];
 
@@ -1016,13 +1022,21 @@ contract Vault is Synchron, ReentrancyGuard, IEventStruct {
 
         // if the usdOut is more than the fee then deduct the fee from the usdOut directly
         // else deduct the fee from the position's collateral
+        // The fee actually charged is returned as the third value: it cannot be derived from
+        // usdOut - usdOutAfterFee, because when the payout cannot cover it the fee is taken from
+        // the remaining collateral and usdOutAfterFee stays equal to usdOut.
         if (usdOut >= fee) {
-            return (usdOut, usdOut - fee);
+            return (usdOut, usdOut - fee, fee);
         }
-        if(position.collateral < fee) revert();
-        
+
+        // Not enough payout to cover the fee. A full close has already zeroed the collateral, so
+        // there is nothing left to charge: revert and let the position follow the liquidation path.
+        // A partial close still holds the remaining position's collateral, so charge it there.
+        if(position.collateral < fee) revert("insufficient collateral for fee");
+
         position.collateral -= fee;
-        return (usdOut, usdOut);
+        // usdOutAfterFee stays usdOut: the fee was taken from the remaining collateral instead
+        return (usdOut, usdOut, fee);
     }
 
     function autoDecreasePosition(
