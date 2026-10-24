@@ -417,7 +417,7 @@ contract TradingMining is Synchron {
 
     /// @notice Set the ratchet decay factor D for a pool (governance only)
     /// @dev D multiplies the ratchet segment only: payout = curve payout × D / 1e18. The underwater
-    ///      and flat segments are not affected. 1e18 means "no decay"; the largest value below that
+    ///      and flat segments are not affected. 1e18 means "no decay"; the smallest non-zero value
     ///      is 1, which effectively mutes the segment. Values above 1e18 are rejected (D must never
     ///      amplify the payout).
     ///      Zero clears the override and restores the default (DEFAULT_DECAY_FACTOR), so a zero
@@ -1347,14 +1347,12 @@ contract TradingMining is Synchron {
         }
 
         // 3) Ratchet segment (>= threshold): rate based on the pre-settlement H, scaled by the
-        //    decay factor D (WAD). D is a plain multiplier on this segment only: the underwater
-        //    and flat segments above are untouched.
-        //    D is folded into the rate BEFORE scaling by the base. Applying it afterwards would
-        //    add an extra 1e18 to the intermediate (the final figure fits either way, but this
-        //    order keeps the widest headroom and truncates exactly the same amount)
+        //    decay factor D (WAD), which applies to this segment only.
+        //    D is folded into the rate first, then the base scaling multiplies everything before a
+        //    single division; the other order may differ by minimal integer-rounding dust
         if(remaining > 0) {
             uint256 decayedRateWad = _rateWad(_hBefore, c) * _decayFactor / 1e18;
-            payout += remaining * decayedRateWad / 1e18 * DER_SCALE;
+            payout += remaining * decayedRateWad * DER_SCALE / 1e18;
         }
     }
 
