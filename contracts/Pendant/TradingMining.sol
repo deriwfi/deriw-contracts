@@ -49,10 +49,8 @@ import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 ///         Only PENDING / PARTIAL ids can be the head.
 ///      10. Mining is OFF by default (miningEnabled = false). While off, _mint returns before any
 ///          calculation, transfer or event, so a close / liquidation behaves exactly as if the
-///          contract had no mining at all, and syncTrackedLp freezes H. Freezing matters because H
-///          never decreases: if pool growth during the pause were recorded, the rate after
-///          resuming would be permanently lower than when mining was switched off. Governance must
-///          call setMiningEnabled(true) after the upgrade.
+///          contract had no mining at all, and syncTrackedLp freezes H. Governance must call
+///          setMiningEnabled(true) after the upgrade.
 contract TradingMining is Synchron {
     using SafeERC20 for IERC20;
 
@@ -155,8 +153,7 @@ contract TradingMining is Synchron {
                                     // minted + shortfall == mintBase * rateWad / 1e18 * DER_SCALE
                                     // (up to the rounding of the division), so integrators can
                                     // reconcile the payout exactly instead of using the truncated
-                                    // integer `rate`. Appended last so the earlier positions keep
-                                    // their index for existing decoders.
+                                    // integer `rate`.
     }
 
     /// @notice Payout request passed to _mint
@@ -171,7 +168,7 @@ contract TradingMining is Synchron {
         uint256 poolCredit;       // Token amount the Vault credits to the pool right AFTER this
                                   // report (same unit as poolAmounts, i.e. collateral decimals)
         bool isLiquidation;       // True = liquidation, false = loss close (event flag only; the
-                                  // Vault always books the credit after reporting, audit L-01)
+                                  // Vault always books the credit after reporting)
     }
 
     /// @notice Result of `previewClose` (read-only estimate of a losing close)
@@ -184,6 +181,8 @@ contract TradingMining is Synchron {
         uint256 hBefore;        // Effective H used for the ratchet segment
         uint8 zone;             // 0 underwater / 1 flat / 2 ratchet (0 when not applicable)
         uint256 availableDer;   // min(derSource balance, allowance to this contract); caps the payout
+        bool miningEnabled;     // false = nothing will actually be minted, so `payout` is reported as 0
+                                // while the other figures (loss, base, level, zone) stay valid
     }
 
     // ==================== Storage (order is fixed, append only) ====================
@@ -526,7 +525,7 @@ contract TradingMining is Synchron {
     ///        trackedLp = Vault.poolAmounts(targetToken, usdt) - unpaid queue debt (may be negative)
     ///        1) underwater zone: trackedLp < 0             -> underwaterRate
     ///        2) flat zone:       0 <= trackedLp < threshold -> flatRate
-    ///        3) ratchet zone:    trackedLp >= threshold    -> flatRate * (S / (S + H))^2
+    ///        3) ratchet zone:    trackedLp >= threshold    -> flatRate * (S / (S + H))^2 * D
     ///      When crossing the threshold, min(mintBase, threshold - trackedLp) uses the rate of
     ///      1)/2) and the remainder uses the rate of 3). The ratchet zone performs no per-dollar
     ///      integration (the pre-settlement H rate is applied once).
@@ -689,7 +688,6 @@ contract TradingMining is Synchron {
     ) internal returns (uint256 payableUsd) {
         // Queue debt is denominated in the collateral token's own units (the same unit as
         // poolAmounts), so convert through the Vault instead of assuming USDT has 6 decimals
-        // (audit L-03).
         uint256 profit = IVault(vault).usdToTokenMin(_collateralToken, _adjustedDelta);
         if(profit == 0) return _adjustedDelta;
 
@@ -711,7 +709,7 @@ contract TradingMining is Synchron {
     /// @notice Report a liquidation
     /// @dev The payout base is the full lost collateral (the liquidation fee is not deducted),
     ///      read from the Vault position before it is deleted. The Vault credits
-    ///      `collateral - fees - liquidationFee` to the pool right AFTER this call (audit L-01), so
+    ///      `collateral - fees - liquidationFee` to the pool right AFTER this call, so
     ///      the credit is still pending here: the live level is the pre-settlement one and
     ///      `_poolCredit` only shifts the post-settlement level.
     ///      Liquidations are not subject to any hold-time rule.
@@ -735,7 +733,7 @@ contract TradingMining is Synchron {
         uint256 mintBase = IVault(vault).getPositionFrom(key).collateral / USD_DECIMALS_TO_6;
         if(mintBase == 0) return;
 
-        // Liquidation: the Vault reports BEFORE crediting the pool (audit L-01), so the credit is
+        // Liquidation: the Vault reports BEFORE crediting the pool, so the credit is
         // still pending here and is flagged as a liquidation for the event only.
         // _poolCredit is a USD value in 6 decimals; convert it to the collateral token's units
         // (same unit as poolAmounts) with the same helper the Vault uses when crediting.
@@ -795,7 +793,7 @@ contract TradingMining is Synchron {
             uint256 pay = r.remaining < cash ? r.remaining : cash;
 
             // CEI: apply every state change BEFORE the external transfer, so a callback during the
-            // payout (token hook or Vault side effects) observes a consistent queue (audit L-06)
+            // payout (token hook or Vault side effects) observes a consistent queue
             r.paid += pay;
             r.remaining -= pay;
             cfg.totalOutstanding -= pay;
@@ -964,11 +962,10 @@ contract TradingMining is Synchron {
     ///      split into segments by `_computeMint`, so its average rate can be higher than this
     ///      value when the level sits just below the threshold.
     /// @dev This is the CURVE rate, not a promise of a payout: it keeps answering while mining is
-    ///      disabled so the curve stays observable, but nothing is minted then. Check
-    ///      miningEnabled() (or LossPreview.miningEnabled for a specific close) before presenting it
-    ///      as a reward.
+    ///      disabled so the curve stays observable, but nothing is minted then. Callers MUST also
+    ///      read miningEnabled() (the global bool getter) before presenting it as a reward.
     /// @param _targetToken Main-pool targetToken
-    /// @return rate Underwater / flat rate, or flatRate * (S / (S + H))^2 in the ratchet zone
+    /// @return rate Underwater / flat rate, or flatRate * (S / (S + H))^2 * D in the ratchet zone
     function getCurrentRate(address _targetToken) public view returns(uint256 rate) {
         CurveParams memory c = curveParams[_targetToken];
         // setCurveParams enforces decayS > 0, so decayS == 0 means the pool is not configured yet
@@ -994,7 +991,8 @@ contract TradingMining is Synchron {
     /// @param _targetToken Main-pool targetToken
     /// @return lp Current water level (signed, USDT 6 decimals)
     /// @return effectiveH Effective high watermark (0 when the curve is unconfigured)
-    /// @return rate Marginal payout rate at the current level (DER per USDT; 0 when unconfigured)
+    /// @return rate Marginal payout rate at the current level (DER per USDT, includes D; 0 when
+    ///         unconfigured)
     /// @return zone 0 underwater / 1 flat / 2 ratchet (0 when unconfigured)
     function getWaterLevelSnapshot(address _targetToken)
         external
@@ -1033,10 +1031,12 @@ contract TradingMining is Synchron {
     ///         report will use (resolved through IDataReader.getTargetIndexToken), not for a fixed
     ///         usdt, so the preview cannot describe a different curve than the one that prices it
     ///      5. payout = _computeMint(mint base, current level, effective H, decay factor)
-    ///      Read-only: nothing is stored and no DER is moved. It is also not gated by the mining
-    ///      switch: it keeps answering while mining is off, because it only prices the curve.
-    ///      Callers MUST read miningEnabled() as well: while that is false nothing is actually
-    ///      minted, so `payout` is a curve figure only and must not be presented as a reward.
+    ///      Read-only: nothing is stored and no DER is moved.
+    ///      While mining is OFF, `payout` (and the `rate` derived from it) is reported as 0, because
+    ///      nothing will actually be minted, and `p.miningEnabled` is false. The other figures
+    ///      (realised loss, mint base, level, effective H, zone) stay valid: they describe the
+    ///      position, not the reward. Integrators should check `p.miningEnabled` before showing a
+    ///      payout at all.
     ///      WARNING: this is an ESTIMATE taken at the moment of the call. The actual payout is
     ///      priced at execution time, using the price and the pool level that exist in the block
     ///      where the close is settled, so the minted amount can differ. Integrators must present
@@ -1046,8 +1046,10 @@ contract TradingMining is Synchron {
     /// @param _account Position owner
     /// @param _isLong true for a long position
     /// @param _sizeDelta Size to close (USD 30 decimals); clamped to the position size
-    /// @return p Estimated loss, mint base, rate, payout, level and zone (all zero when the pool
-    ///         is unconfigured, the position does not exist, or the price moved in favour)
+    /// @return p Estimated loss, mint base, rate, payout, level, zone and the mining flag. All zero
+    ///         when the pool is unconfigured, the position does not exist or the price moved in
+    ///         favour; when mining is merely disabled only `payout` and `rate` are 0 (and
+    ///         `miningEnabled` is false)
     function previewClose(
         address _indexToken,
         address _collateralToken,
@@ -1055,6 +1057,9 @@ contract TradingMining is Synchron {
         bool _isLong,
         uint256 _sizeDelta
     ) external view returns (LossPreview memory p) {
+        // Set first so every early return below reports the real switch state, not the zero default
+        p.miningEnabled = miningEnabled;
+
         if(_getCoinType(_indexToken) != 1 || _sizeDelta == 0) return p;
 
         // Resolve the pool target exactly like _mint does (via the Vault's report) instead of
@@ -1098,6 +1103,12 @@ contract TradingMining is Synchron {
         p.hBefore = _effectiveHighWatermark(p.lpBefore, highWatermark[targetToken], c);
         p.zone = _zoneOf(p.lpBefore, c.threshold);
         p.payout = _computeMint(p.mintBase, p.lpBefore, p.hBefore, c, getDecayFactor(targetToken));
+
+        // Mining off: nothing is actually minted, so the payout is reported as zero while the other
+        // figures stay valid (they describe the position, not the reward)
+        if(!miningEnabled) p.payout = 0;
+
+        // Derived from the reported payout, so it is 0 whenever nothing would be minted
         p.rate = p.payout / (p.mintBase * DER_SCALE);
         // The payout above is what the curve allows; the transfer is capped by whichever is smaller,
         // the source balance or the allowance this contract was granted
@@ -1106,7 +1117,7 @@ contract TradingMining is Synchron {
 
     /// @notice Persist the current peak water level as the high watermark
     /// @dev Called by the Vault through VaultUtils on every pool-amount change, so a peak that is
-    ///      later lowered (profit payout, queue debt, operator withdrawal) is never lost (M-15).
+    ///      later lowered (profit payout, queue debt, operator withdrawal) is never lost.
     ///      `_updateHighWatermark` is monotonic, therefore redundant calls are harmless and
     ///      repeated hits cost only a comparison plus one SLOAD.
     ///      Writes storage only: it never moves funds, so it is safe inside the Vault's
@@ -1120,10 +1131,7 @@ contract TradingMining is Synchron {
         // Cheap coin-type check (does not emit NonMainPoolSkipped for every transfer)
         if(_getCoinType(_indexToken) != 1) return targetToken;
 
-        // Freeze the peak while mining is off. A paused incentive period must not consume the
-        // headroom that would otherwise be paid out after it resumes: without this, pool growth
-        // during the pause is baked into H, and since H never decreases the rate can come back
-        // permanently lower than it was when mining was switched off.
+        // Freeze the peak while mining is off.
         if(!miningEnabled) return targetToken;
 
         CurveParams memory c = curveParams[targetToken];
@@ -1418,13 +1426,13 @@ contract TradingMining is Synchron {
         address targetToken = _req.targetToken;
         CurveParams memory c = curveParams[targetToken];
         // Mining is an add-on incentive: an unconfigured curve must never block a close or a
-        // liquidation. Emit and skip instead of reverting (audit H-04).
+        // liquidation. Emit and skip instead of reverting.
         if(c.flatRate == 0) {
             emit CurveNotSet(targetToken);
             return;
         }
 
-        // The Vault always reports BEFORE crediting the pool (audit L-01), so the credit is still
+        // The Vault always reports BEFORE crediting the pool, so the credit is still
         // pending for both paths and only shifts the post-settlement level:
         //   lpBefore = current, lpAfter = current + poolCredit
         int256 lpNow = getTrackedLp(targetToken);
@@ -1488,7 +1496,7 @@ contract TradingMining is Synchron {
         r.rateWad = _req.mintBase > 0 ? payout * 1e18 / (_req.mintBase * DER_SCALE) : 0;
         r.zone = _zoneOf(lpBefore, c.threshold);
         // Pure path flag for the event. The credit timing is NOT a discriminator any more: the
-        // Vault reports before crediting on both paths (audit L-01), so liquidation and loss close
+        // Vault reports before crediting on both paths, so liquidation and loss close
         // only differ in the payout base, not in when the pool is credited.
         r.isLiquidation = _req.isLiquidation;
 
