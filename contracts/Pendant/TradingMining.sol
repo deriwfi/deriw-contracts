@@ -24,9 +24,10 @@ import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 ///         targetToken.
 ///      4. The mint curve is configurable per targetToken: the underwater zone uses
 ///         underwaterRate, the flat zone uses flatRate and the ratchet zone uses
-///         flatRate * (S / (S + H))^2. A single report uses the pre-settlement trackedLp to pick
-///         the zone and the pre-settlement H (synced with the pre-settlement level) to pick the
-///         rate; crossing the threshold is split into segments. No per-dollar integration.
+///         flatRate * (S / (S + H))^2, scaled by the decay factor D (default 0.9, governable per
+///         targetToken via setDecayFactor). A single report uses the pre-settlement trackedLp to
+///         pick the zone and the pre-settlement H (synced with the pre-settlement level) to pick
+///         the rate; crossing the threshold is split into segments. No per-dollar integration.
 ///      5. There is a single global payout queue (one per pool); records are mapped by targetToken.
 ///         The payout entry point is called by an authorized address and loops over
 ///         Vault.transferOut. The head record must be fully paid before moving on (no skipping).
@@ -46,6 +47,12 @@ import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 ///      9. Queue record lifecycle:
 ///         NONE (unused id) -> PENDING (enqueued) -> PARTIAL (paid in part) -> CLEARED (fully paid).
 ///         Only PENDING / PARTIAL ids can be the head.
+///      10. Mining is OFF by default (miningEnabled = false). While off, _mint returns before any
+///          calculation, transfer or event, so a close / liquidation behaves exactly as if the
+///          contract had no mining at all, and syncTrackedLp freezes H. Freezing matters because H
+///          never decreases: if pool growth during the pause were recorded, the rate after
+///          resuming would be permanently lower than when mining was switched off. Governance must
+///          call setMiningEnabled(true) after the upgrade.
 contract TradingMining is Synchron {
     using SafeERC20 for IERC20;
 
@@ -67,6 +74,10 @@ contract TradingMining is Synchron {
     ///      govern. Queries are fail-open (see _isBlacklisted), therefore an absent or upgraded
     ///      contract can never block a close.
     address public constant BLACKLIST = 0x00000000000000000000000000000000000007eB;
+    /// @notice Default decay factor D for the ratchet segment (WAD, 0.9 = 9e17)
+    /// @dev Applied on top of the squared-curve rate: ratchet payout × D. Governance can override
+    ///      it per targetToken with setDecayFactor; a zero override falls back to this value.
+    uint256 public constant DEFAULT_DECAY_FACTOR = 9e17;
     /// @notice Skip reason: the funding source cannot cover the payout (balance or allowance)
     uint8 public constant SKIP_INSUFFICIENT_DER = 0;
     /// @notice Skip reason: the account is flagged by the blacklist contract
@@ -140,6 +151,12 @@ contract TradingMining is Synchron {
         uint8 zone;                 // Zone determined by the pre-settlement water level
         bool isLiquidation;         // true = liquidation, false = loss close
         uint256 shortfall;          // Curve payout not delivered because the DER balance ran out
+        uint256 rateWad;            // Same average rate as `rate`, with 1e18 precision.
+                                    // minted + shortfall == mintBase * rateWad / 1e18 * DER_SCALE
+                                    // (up to the rounding of the division), so integrators can
+                                    // reconcile the payout exactly instead of using the truncated
+                                    // integer `rate`. Appended last so the earlier positions keep
+                                    // their index for existing decoders.
     }
 
     /// @notice Payout request passed to _mint
@@ -212,6 +229,14 @@ contract TradingMining is Synchron {
     /// @dev This contract never needs to hold DER: mining payouts are pulled from here with
     ///      safeTransferFrom, so the source must approve this contract for the DER it will hand out.
     address public derSource;
+    /// @notice Mining switch; OFF by default
+    /// @dev A freshly added storage slot reads as zero, so every already-deployed proxy comes up
+    ///      with mining disabled. Governance must call setMiningEnabled(true) to start mining.
+    bool public miningEnabled;
+    /// @notice Ratchet-segment decay factor D per targetToken (WAD)
+    /// @dev Stored as an override. Zero means "not set", in which case DEFAULT_DECAY_FACTOR (0.9)
+    ///      applies; callers should read getDecayFactor() rather than this mapping directly.
+    mapping(address => uint256) public decayFactor;
 
 
     // ==================== Events ====================
@@ -234,6 +259,13 @@ contract TradingMining is Synchron {
     event TreasurySet(address indexed treasury);
     /// @notice DER funding source updated (payouts are pulled from it with safeTransferFrom)
     event DerSourceSet(address indexed derSource);
+    /// @notice Mining switch changed. While disabled nothing is minted and no mining events fire
+    event MiningEnabledSet(bool enabled);
+    /// @notice Ratchet decay factor D changed
+    /// @param targetToken Main-pool targetToken
+    /// @param decayFactor Stored override (0 = cleared, i.e. the default applies again); read
+    ///        getDecayFactor() for the value that is actually in use
+    event DecayFactorSet(address indexed targetToken, uint256 decayFactor);
     /// @notice Governance address updated
     event GovSet(address indexed gov);
     /// @notice Settlement keeper whitelist updated
@@ -362,6 +394,44 @@ contract TradingMining is Synchron {
         if(_derSource == address(0)) revert("derSource err");
         derSource = _derSource;
         emit DerSourceSet(_derSource);
+    }
+
+    /// @notice Turn mining on or off (governance only)
+    /// @dev Mining is OFF by default, so it must be enabled explicitly before any DER is paid.
+    ///      While disabled `_mint` returns before doing anything: no DER is transferred and no
+    ///      mining event (MintRecorded / CurveNotSet / DerPayoutSkipped) is emitted. Closes and
+    ///      liquidations are unaffected. The water level keeps being tracked by the Vault through
+    ///      syncTrackedLp, so H is not rewound when mining is turned back on.
+    /// @param _enabled true = mine, false = stop mining
+    function setMiningEnabled(bool _enabled) external onlyGov {
+        miningEnabled = _enabled;
+        emit MiningEnabledSet(_enabled);
+    }
+
+    /// @notice Effective ratchet decay factor D for a pool (WAD)
+    /// @param _targetToken Main-pool targetToken
+    /// @return The stored override, or DEFAULT_DECAY_FACTOR (0.9) when none is set
+    function getDecayFactor(address _targetToken) public view returns (uint256) {
+        uint256 f = decayFactor[_targetToken];
+        return f == 0 ? DEFAULT_DECAY_FACTOR : f;
+    }
+
+    /// @notice Set the ratchet decay factor D for a pool (governance only)
+    /// @dev D multiplies the ratchet segment only: payout = curve payout × D / 1e18. The underwater
+    ///      and flat segments are not affected. 1e18 means "no decay"; the largest value below that
+    ///      is 1, which effectively mutes the segment. Values above 1e18 are rejected (D must never
+    ///      amplify the payout).
+    ///      Zero clears the override and restores the default (DEFAULT_DECAY_FACTOR), so a zero
+    ///      override cannot be stored: DEFAULT_DECAY_FACTOR is a constant, therefore "clear" and
+    ///      "set it to the default explicitly" are the same state and need no separate entry point.
+    /// @param _targetToken Main-pool targetToken
+    /// @param _decayFactor Decay factor in WAD (0 = restore the default, 1 <= D <= 1e18)
+    function setDecayFactor(address _targetToken, uint256 _decayFactor) external onlyGov {
+        if(_targetToken != usdt) revert("targetToken err");
+        if(_decayFactor > 1e18) revert("decayFactor err");
+
+        decayFactor[_targetToken] = _decayFactor;
+        emit DecayFactorSet(_targetToken, _decayFactor);
     }
 
     /// @notice Set the minimum reserve of a main pool (governance only)
@@ -893,6 +963,10 @@ contract TradingMining is Synchron {
     ///      after the last report already lower it. A single report that crosses the threshold is
     ///      split into segments by `_computeMint`, so its average rate can be higher than this
     ///      value when the level sits just below the threshold.
+    /// @dev This is the CURVE rate, not a promise of a payout: it keeps answering while mining is
+    ///      disabled so the curve stays observable, but nothing is minted then. Check
+    ///      miningEnabled() (or LossPreview.miningEnabled for a specific close) before presenting it
+    ///      as a reward.
     /// @param _targetToken Main-pool targetToken
     /// @return rate Underwater / flat rate, or flatRate * (S / (S + H))^2 in the ratchet zone
     function getCurrentRate(address _targetToken) public view returns(uint256 rate) {
@@ -907,7 +981,9 @@ contract TradingMining is Synchron {
         // Ratchet zone: uses the effective H (stored H aligned with the current level)
         uint256 h = _effectiveHighWatermark(lp, highWatermark[_targetToken], c);
 
-        rate = _rateWad(h, c) / 1e18;
+        // Apply the same decay factor _computeMint applies, otherwise this view would report a rate
+        // 1/D too high in the ratchet zone and disagree with what a close actually pays out
+        rate = _rateWad(h, c) * getDecayFactor(_targetToken) / 1e18 / 1e18;
     }
 
     /// @notice Water level, effective H, marginal rate and zone in a single call
@@ -940,7 +1016,9 @@ contract TradingMining is Synchron {
         } else if(zone == ZONE_FLAT) {
             rate = c.flatRate;
         } else {
-            rate = _rateWad(effectiveH, c) / 1e18;
+            // Ratchet zone: the decay factor D applies here too, so the snapshot agrees with
+            // getCurrentRate and with what a close actually pays out
+            rate = _rateWad(effectiveH, c) * getDecayFactor(_targetToken) / 1e18 / 1e18;
         }
     }
 
@@ -951,8 +1029,14 @@ contract TradingMining is Synchron {
     ///      2. delta from the SAME Phase.getDeltaFor call `recordPnl` uses, scaled by
     ///         `_sizeDelta / size`; a favourable move returns 0
     ///      3. mint base = that realised loss, capped by the remaining collateral
-    ///      4. payout = _computeMint(mint base, current level, effective H)
-    ///      Read-only: nothing is stored and no DER is moved.
+    ///      4. the curve, the stored H and the decay factor are read for the SAME targetToken the
+    ///         report will use (resolved through IDataReader.getTargetIndexToken), not for a fixed
+    ///         usdt, so the preview cannot describe a different curve than the one that prices it
+    ///      5. payout = _computeMint(mint base, current level, effective H, decay factor)
+    ///      Read-only: nothing is stored and no DER is moved. It is also not gated by the mining
+    ///      switch: it keeps answering while mining is off, because it only prices the curve.
+    ///      Callers MUST read miningEnabled() as well: while that is false nothing is actually
+    ///      minted, so `payout` is a curve figure only and must not be presented as a reward.
     ///      WARNING: this is an ESTIMATE taken at the moment of the call. The actual payout is
     ///      priced at execution time, using the price and the pool level that exist in the block
     ///      where the close is settled, so the minted amount can differ. Integrators must present
@@ -971,10 +1055,17 @@ contract TradingMining is Synchron {
         bool _isLong,
         uint256 _sizeDelta
     ) external view returns (LossPreview memory p) {
-        CurveParams memory c = curveParams[usdt];
-        if(_getCoinType(_indexToken) != 1 || c.threshold == 0 || c.decayS == 0 || _sizeDelta == 0) {
-            return p;
-        }
+        if(_getCoinType(_indexToken) != 1 || _sizeDelta == 0) return p;
+
+        // Resolve the pool target exactly like _mint does (via the Vault's report) instead of
+        // assuming usdt. They agree for the current main pools, but the curve / watermark / decay
+        // factor are all keyed by targetToken, so the preview must read the same keys as the report
+        // or it could describe a different curve than the one that will price the close.
+        // _mainPoolTarget is not used here: it emits NonMainPoolSkipped and this function is view.
+        address targetToken = IDataReader(dataReader).getTargetIndexToken(_indexToken);
+
+        CurveParams memory c = curveParams[targetToken];
+        if(c.threshold == 0 || c.decayS == 0) return p;
 
         IEventStruct.Position memory pos = IVault(vault).getPositionFrom(
             IVault(vault).getPositionKey(_account, _collateralToken, _indexToken, _isLong)
@@ -1003,10 +1094,10 @@ contract TradingMining is Synchron {
         p.mintBase = p.realisedLoss;
 
         // Nothing is booked yet, so the pre-settlement level is the current level
-        p.lpBefore = getTrackedLp(usdt);
-        p.hBefore = _effectiveHighWatermark(p.lpBefore, highWatermark[usdt], c);
+        p.lpBefore = getTrackedLp(targetToken);
+        p.hBefore = _effectiveHighWatermark(p.lpBefore, highWatermark[targetToken], c);
         p.zone = _zoneOf(p.lpBefore, c.threshold);
-        p.payout = _computeMint(p.mintBase, p.lpBefore, p.hBefore, c);
+        p.payout = _computeMint(p.mintBase, p.lpBefore, p.hBefore, c, getDecayFactor(targetToken));
         p.rate = p.payout / (p.mintBase * DER_SCALE);
         // The payout above is what the curve allows; the transfer is capped by whichever is smaller,
         // the source balance or the allowance this contract was granted
@@ -1028,6 +1119,13 @@ contract TradingMining is Synchron {
         address targetToken = IDataReader(dataReader).getTargetIndexToken(_indexToken);
         // Cheap coin-type check (does not emit NonMainPoolSkipped for every transfer)
         if(_getCoinType(_indexToken) != 1) return targetToken;
+
+        // Freeze the peak while mining is off. A paused incentive period must not consume the
+        // headroom that would otherwise be paid out after it resumes: without this, pool growth
+        // during the pause is baked into H, and since H never decreases the rate can come back
+        // permanently lower than it was when mining was switched off.
+        if(!miningEnabled) return targetToken;
+
         CurveParams memory c = curveParams[targetToken];
         if(c.threshold == 0 || c.decayS == 0) return targetToken;
 
@@ -1205,13 +1303,20 @@ contract TradingMining is Synchron {
     }
 
     /// @dev Compute the payout amount using the pre-settlement water level and pre-settlement H;
-    ///      crossing the threshold is split into segments
+    ///      crossing the threshold is split into segments. The ratchet segment alone is scaled by
+    ///      the decay factor D, so the underwater and flat segments keep paying their full rate
+    /// @param _mintBase Payout base (USDT 6 decimals)
+    /// @param _lpBefore Pre-settlement water level (signed, collateral token units)
+    /// @param _hBefore Pre-settlement high watermark (collateral token units)
+    /// @param c Curve parameters of the pool
+    /// @param _decayFactor Ratchet decay factor D (WAD, 1e18 = no decay)
     /// @return payout Computed payout (DER 18 decimals), before the DER balance cap
     function _computeMint(
         uint256 _mintBase,
         int256 _lpBefore,
         uint256 _hBefore,
-        CurveParams memory c
+        CurveParams memory c,
+        uint256 _decayFactor
     ) internal pure returns(uint256 payout) {
         uint256 remaining = _mintBase;
         int256 lp = _lpBefore;
@@ -1233,9 +1338,15 @@ contract TradingMining is Synchron {
             remaining -= part;
         }
 
-        // 3) Ratchet segment (>= threshold): uses the rate based on the pre-settlement H
+        // 3) Ratchet segment (>= threshold): rate based on the pre-settlement H, scaled by the
+        //    decay factor D (WAD). D is a plain multiplier on this segment only: the underwater
+        //    and flat segments above are untouched.
+        //    D is folded into the rate BEFORE scaling by the base. Applying it afterwards would
+        //    add an extra 1e18 to the intermediate (the final figure fits either way, but this
+        //    order keeps the widest headroom and truncates exactly the same amount)
         if(remaining > 0) {
-            payout += remaining * _rateWad(_hBefore, c) / 1e18 * DER_SCALE;
+            uint256 decayedRateWad = _rateWad(_hBefore, c) * _decayFactor / 1e18;
+            payout += remaining * decayedRateWad / 1e18 * DER_SCALE;
         }
     }
 
@@ -1294,9 +1405,16 @@ contract TradingMining is Synchron {
         if(available > allowance_) available = allowance_;
     }
 
-    /// @dev Pay out DER and update H, then emit the record
-    /// @param _req Payout request (target token, receiver, position, payout base and pool credit)
+    /// @dev Pay out DER and update H, then emit the record. Returns immediately (no transfer, no
+    ///      event) while mining is disabled, so the switch is invisible on chain
+    /// @param _req Payout request (target token, receiver, position, payout base, pool credit and
+    ///        the liquidation flag)
     function _mint(MintRequest memory _req) internal {
+        // Mining switch: OFF by default. Stop before any calculation, transfer or event, so a
+        // disabled switch is invisible on chain: no MintRecorded, no CurveNotSet, no
+        // DerPayoutSkipped.
+        if(!miningEnabled) return;
+
         address targetToken = _req.targetToken;
         CurveParams memory c = curveParams[targetToken];
         // Mining is an add-on incentive: an unconfigured curve must never block a close or a
@@ -1319,7 +1437,7 @@ contract TradingMining is Synchron {
         // synced value for the rate, then raise it again from the post-settlement level.
         uint256 hBefore = _updateHighWatermark(targetToken, lpBefore, highWatermark[targetToken], c);
 
-        uint256 payout = _computeMint(_req.mintBase, lpBefore, hBefore, c);
+        uint256 payout = _computeMint(_req.mintBase, lpBefore, hBefore, c, getDecayFactor(targetToken));
 
         // Actual payout: pulled from the funding source with safeTransferFrom. This contract does
         // not hold DER, so the source must both hold the tokens AND approve this contract.
@@ -1362,8 +1480,12 @@ contract TradingMining is Synchron {
         r.hBefore = hBefore;
         r.hAfter = hAfter;
         // Curve payout per unit of base (DER per USDT): with several segments the average is
-        // weighted by the segment amounts; a DER balance cap is not reflected here
+        // weighted by the segment amounts; a DER balance cap is not reflected here.
+        // `rate` keeps the legacy integer value (truncated, convenient for magnitude checks);
+        // `rateWad` carries the same figure with 1e18 precision so the payout can be reconciled
+        // exactly: mintBase * rateWad / 1e18 * DER_SCALE == payout.
         r.rate = _req.mintBase > 0 ? payout / (_req.mintBase * DER_SCALE) : 0;
+        r.rateWad = _req.mintBase > 0 ? payout * 1e18 / (_req.mintBase * DER_SCALE) : 0;
         r.zone = _zoneOf(lpBefore, c.threshold);
         // Pure path flag for the event. The credit timing is NOT a discriminator any more: the
         // Vault reports before crediting on both paths (audit L-01), so liquidation and loss close
@@ -1393,11 +1515,16 @@ contract TradingMining is Synchron {
     }
 
     /// @dev Update the high watermark: H = max(H, trackedLp - threshold), monotonic
+    /// @dev Freezes while mining is off. The check lives here, on the single write path, rather than
+    ///      only in syncTrackedLp: profit payouts, excess sweeps and governance re-config all reach
+    ///      this function directly, and any of them would otherwise record a peak during the pause
     /// @param _hBefore Stored H already loaded by the caller (avoids a duplicate SLOAD)
     function _updateHighWatermark(address _targetToken, int256 _lp, uint256 _hBefore, CurveParams memory c)
         internal
         returns (uint256 h)
     {
+        if(!miningEnabled) return _hBefore;
+
         h = _effectiveHighWatermark(_lp, _hBefore, c);
         if(h != _hBefore) {
             highWatermark[_targetToken] = h;
