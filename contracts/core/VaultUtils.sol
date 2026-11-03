@@ -13,6 +13,7 @@ import "../peripherals/interfaces/ITimelock.sol";
 import "./interfaces/IDataReader.sol";
 import "../Pendant/interfaces/ITradingMining.sol";
 import "../Pendant/interfaces/ICoinData.sol";
+import "../Pendant/interfaces/ILiquidateBuffer.sol";
 
 /**
  * @title VaultUtils
@@ -364,6 +365,13 @@ contract VaultUtils is Synchron, IEventStruct {
         if (remainingCollateral * maxLeverage < position.size * BASIS_POINTS_DIVISOR) {
             if (vData.raise) { revert("Vault: maxLeverage exceeded"); }
             return (2, marginFees);
+        }
+
+        if (address(liquidateBuffer) != address(0)) {
+            if (liquidateBuffer.isForcedLiquidation(vData.indexToken, position.size, position.collateral, remainingCollateral)) {
+                if (vData.raise) { revert("Vault: buffer exceeded"); }
+                return (2, marginFees);
+            }
         }
 
         return (0, marginFees);
@@ -760,5 +768,21 @@ contract VaultUtils is Synchron, IEventStruct {
     ///      instead of being inlined into every caller.
     function _requireVault() internal view {
         if(msg.sender != address(vault)) revert("vault err");
+    }
+
+    /// @notice LiquidateBuffer contract (address(0) = buffer check disabled)
+    /// @dev Appended after every other state variable so the proxy layout stays upgrade-safe.
+    ILiquidateBuffer public liquidateBuffer;
+
+    /// @notice Emitted when the LiquidateBuffer address is updated
+    event SetLiquidateBuffer(address indexed liquidateBuffer);
+
+    /// @notice Set the LiquidateBuffer contract
+    /// @dev Optional integration: when unset (address(0)) the buffer check is skipped and the
+    ///      liquidation rules are exactly the legacy ones.
+    /// @param _liquidateBuffer LiquidateBuffer contract address (must implement ILiquidateBuffer)
+    function setLiquidateBuffer(address _liquidateBuffer) external onlyGov {
+        liquidateBuffer = ILiquidateBuffer(_liquidateBuffer);
+        emit SetLiquidateBuffer(_liquidateBuffer);
     }
 }
