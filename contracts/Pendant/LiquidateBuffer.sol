@@ -9,19 +9,25 @@ import "./interfaces/ISlippage.sol";
 
 /// @title LiquidateBuffer
 /// @notice Per-leverage liquidation buffer. Replaces the old "one global liquidation leverage for
-///         every position" rule with a table keyed by the position's own opening leverage.
+///         every position" rule with a table keyed by the position's own leverage, computed as
+///         `size / collateral` from the values stored at call time.
 /// @dev Motivation: with a single global threshold (`remainingCollateral * maxLeverage < size`),
 ///      the implied buffer as a fraction of the trader's own collateral is `openLeverage / maxLeverage`,
 ///      so a 10x position gets a far wider relative buffer than a 500x one and is liquidated much
 ///      later than it should be. Here every leverage band gets its own `bufferBps` (the share of the
-///      ORIGINAL collateral that must remain), and the final trigger is the stricter of:
+///      position's collateral that must remain). That reference is `position.collateral` as
+///      currently stored, NOT the amount at open: adding margin or partially closing moves it, and
+///      the check always uses whatever the Vault reports at call time. The final trigger is the
+///      stricter of:
 ///
 ///          remainingCollateral < max(size / liquidationLeverage, collateral * bufferBps)
 ///
 ///      The legacy `size / liquidationLeverage` term is still enforced by VaultUtils before this
 ///      contract is consulted, so a band can only make liquidation earlier, never later.
 ///
-///      Bands are stored 1-based and must be strictly increasing. A leverage L falls into band i when
+///      Bands are stored 1-based. Both fields must be strictly increasing across the table: the
+///      leverage ceiling goes up, and the required buffer goes up with it, so a higher-leverage band
+///      is never laxer than a lower one. A leverage L falls into band i when
 ///      `cap[i-1] < L <= cap[i]`, with `cap[0]` implicitly 0. Leverage above the last cap keeps using
 ///      the last band, so a reconfiguration that stops short of the real maximum degrades gracefully
 ///      instead of reverting inside the liquidation path.
@@ -39,14 +45,17 @@ contract LiquidateBuffer is Synchron {
     uint256 public constant MAX_BUFFER_BPS = 5000;
 
     /// @notice Hard ceiling for the number of bands per token. `isForcedLiquidation` walks the band
-    ///         list on every liquidation check, so this cap bounds the gas of that walk.
+    ///         list on every liquidation check and `getLiquidationInfo` walks it on every front-end
+    ///         read, so this cap bounds both. It also bounds the wipe loop in `_clearBands`.
     uint256 public constant MAX_CONFIGS = 20;
 
     /// @notice One leverage band
     /// @param positionLeverage Upper bound of the band, in basis points (10000 == 1x). A position
     ///        with leverage L matches this band when `previousCap < L <= positionLeverage`.
-    /// @param bufferBps Share of the ORIGINAL collateral that must remain, in basis points
-    ///        (2500 == 25%). Liquidation fires once `remainingCollateral` drops below
+    /// @param bufferBps Share of the position's current collateral that must remain, in basis
+    ///        points (2500 == 25%). The reference is `position.collateral` as stored at call time,
+    ///        not the amount at open, so adding margin or partially closing changes the line.
+    ///        Liquidation fires once `remainingCollateral` drops below
     ///        `collateral * bufferBps / 10000`.
     struct BufferConfig {
         uint256 positionLeverage;
@@ -81,9 +90,7 @@ contract LiquidateBuffer is Synchron {
     /// @notice Emitted when governance is transferred
     event GovSet(address indexed gov);
 
-    /// @notice Emitted when the four dependency addresses are set in one go
-    /// @dev Not indexed: four indexed addresses would exceed the three-topic limit, and filtering by
-    ///      this event is rare compared to the buffer events below
+    /// @notice Emitted when the dependency contracts are set
     event ContractsSet(address dataReader, address vault, address slippage, address vaultUtils);
 
     /// @notice Emitted for every stored band
@@ -93,7 +100,10 @@ contract LiquidateBuffer is Synchron {
     /// @param bufferBps Required remaining-collateral share, in basis points
     event BufferConfigSet(address indexed token, uint256 indexed index, uint256 positionLeverage, uint256 bufferBps);
 
-    /// @notice Emitted before a reconfiguration wipes the previous bands
+    /// @notice Emitted whenever bands are removed, by `setBufferConfig` (before the new table is
+    ///         written) or by `clearBufferConfig` (removal only)
+    /// @dev Never emitted for a token that had no bands, so a first-time configuration and a repeated
+    ///      clear stay silent
     /// @param token Main-pool index token
     /// @param oldCount Number of bands that were removed
     event BufferConfigCleared(address indexed token, uint256 oldCount);
@@ -115,10 +125,8 @@ contract LiquidateBuffer is Synchron {
         _;
     }
 
-    /// @notice Initialize the proxy and take governance
-    /// @dev Callable once. Dependencies are NOT set here on purpose: they are configured with
-    ///      `setContracts`, so a deployment script can batch `initialize` + `setContracts` and the
-    ///      window in which the contract has no governance is as small as possible.
+    /// @notice Initialize the contract and take governance
+    /// @dev Callable once; dependencies are set separately by `setContracts`
     function initialize() external {
         if(initialized) revert("has initialized");
 
@@ -134,16 +142,11 @@ contract LiquidateBuffer is Synchron {
         emit GovSet(_gov);
     }
 
-    /// @notice Set every dependency in one call
-    /// @dev Overwrites all four addresses: callers must pass the current values for the ones they do
-    ///      not intend to change. All four must be non-zero, because every read path depends on them:
-    ///      `dataReader` resolves the token, `vault` provides the position and MIN_LEVERAGE,
-    ///      `slippage` provides the liquidation leverage, and `vaultUtils` is the only address
-    ///      allowed to call `isForcedLiquidation`.
+    /// @notice Set the dependency contracts
     /// @param _dataReader DataReader address
     /// @param _vault Vault address
     /// @param _slippage Slippage address
-    /// @param _vaultUtils VaultUtils address (the PROXY address, not the implementation)
+    /// @param _vaultUtils VaultUtils address (the proxy, not the implementation)
     function setContracts(
         address _dataReader,
         address _vault,
@@ -164,16 +167,20 @@ contract LiquidateBuffer is Synchron {
 
     /// @notice Replace the whole leverage band table of a token
     /// @dev Full replacement, not a merge: the previous bands are deleted first, so the new array
-    ///      must describe the complete table. Requirements, checked in order:
+    ///      must describe the complete table. Requirements:
     ///        - `_indexToken` non-zero and resolvable by DataReader
     ///        - 1 <= _configs.length <= MAX_CONFIGS
     ///        - band 1 leverage >= Vault.MIN_LEVERAGE
     ///        - each band leverage > the previous one (strictly increasing, no duplicates)
+    ///        - each band bufferBps > the previous one (strictly increasing), so a higher leverage
+    ///          band is never laxer than a lower one; this also rules out bufferBps == 0, since
+    ///          "disabled" is expressed by clearBufferConfig instead
+    ///        - bufferBps <= MAX_BUFFER_BPS
     ///        - last band leverage <= the token's liquidation leverage, so the legacy
     ///          `size / liquidationLeverage` term is never the only thing covering the top range
-    ///        - 0 <= bufferBps <= MAX_BUFFER_BPS
-    ///      A failing entry reverts the whole call, so a rejected reconfiguration leaves the previous
-    ///      table untouched.
+    ///      The per-entry checks below run in the order leverage, bufferBps, then the first/last
+    ///      bounds, so an early entry can report a later-listed rule first. A failing entry reverts
+    ///      the whole call, so a rejected reconfiguration leaves the previous table untouched.
     /// @param _indexToken Index token (a channel token is resolved to its main-pool token)
     /// @param _configs Complete band table, ordered by ascending leverage
     function setBufferConfig(address _indexToken, BufferConfig[] memory _configs) external onlyGov {
@@ -184,13 +191,7 @@ contract LiquidateBuffer is Synchron {
         address token = IDataReader(dataReader).getIndexToken(_indexToken);
 
         // Wipe the previous table so a shorter array can never leave stale bands behind
-        uint256 oldCount = tokenBufferCount[token];
-        for(uint256 i = 1; i <= oldCount; i++) {
-            delete tokenBufferConfigs[token][i];
-        }
-        if(oldCount > 0) {
-            emit BufferConfigCleared(token, oldCount);
-        }
+        _clearBands(token);
 
         uint256 len = _configs.length;
         uint256 minLeverage = IVault(vault).MIN_LEVERAGE();
@@ -199,12 +200,17 @@ contract LiquidateBuffer is Synchron {
         (, uint256 maxLeverage) = ISlippage(slippage).getTokenLeverage(token);
 
         uint256 prevLeverage = 0;
+        uint256 prevBufferBps = 0;
         for(uint256 i = 0; i < len; i++) {
             uint256 positionLeverage = _configs[i].positionLeverage;
             uint256 bufferBps = _configs[i].bufferBps;
 
             if(positionLeverage == 0) revert("leverage err");
             if(positionLeverage <= prevLeverage) revert("leverage order err");
+            // Bands must get progressively stricter, so a higher leverage band can never ask for
+            // LESS remaining collateral than a lower one. Also rejects bufferBps == 0 on the first
+            // band: a zero buffer means "disabled", which is what clearBufferConfig is for.
+            if(bufferBps <= prevBufferBps) revert("bufferBps order err");
             if(bufferBps > MAX_BUFFER_BPS) revert("bufferBps err");
 
             if(i == 0 && positionLeverage < minLeverage) revert("minLeverage err");
@@ -213,6 +219,7 @@ contract LiquidateBuffer is Synchron {
             uint256 idx = i + 1;
             tokenBufferConfigs[token][idx] = BufferConfig(positionLeverage, bufferBps);
             prevLeverage = positionLeverage;
+            prevBufferBps = bufferBps;
 
             emit BufferConfigSet(token, idx, positionLeverage, bufferBps);
         }
@@ -220,6 +227,35 @@ contract LiquidateBuffer is Synchron {
         tokenBufferCount[token] = len;
 
         emit BufferConfigBatchSet(token, len);
+    }
+
+    /// @notice Remove every band of one or more tokens, disabling the buffer check for them only
+    /// @param _indexTokens Index tokens (channel tokens are resolved to their main-pool token)
+    function clearBufferConfig(address[] calldata _indexTokens) external onlyGov {
+        uint256 len = _indexTokens.length;
+        if(len == 0) revert("length err");
+
+        for(uint256 i = 0; i < len; i++) {
+            if(_indexTokens[i] == address(0)) revert("indexToken err");
+            _clearBands(IDataReader(dataReader).getIndexToken(_indexTokens[i]));
+        }
+    }
+
+    /// @notice Delete every stored band of a token and reset its counter
+    /// @dev Shared by `setBufferConfig` (wipe before writing the new table) and `clearBufferConfig`
+    ///      (wipe only). Returns early when nothing is configured so a first-time configuration does
+    ///      not emit a spurious `BufferConfigCleared(token, 0)`.
+    /// @param _token Main-pool index token (already resolved)
+    function _clearBands(address _token) internal {
+        uint256 oldCount = tokenBufferCount[_token];
+        if(oldCount == 0) return;
+
+        for(uint256 i = 1; i <= oldCount; i++) {
+            delete tokenBufferConfigs[_token][i];
+        }
+        delete tokenBufferCount[_token];
+
+        emit BufferConfigCleared(_token, oldCount);
     }
 
     /// @notice Number of bands configured for a token
@@ -262,14 +298,17 @@ contract LiquidateBuffer is Synchron {
     ///      rather than "is it liquidatable right now" (that is `isForcedLiquidation`, fed by the
     ///      Vault with the price-dependent remaining collateral).
     ///
-    ///      Values are zero when the position does not exist (size and collateral both 0) or when the
-    ///      token has no bands; use `threshold == 0` to detect that case, since `index` may still
-    ///      report band 1 for a zero-leverage input.
+    ///      `threshold` and `marginRatioWad` are zero when the position does not exist (size and
+    ///      collateral both 0) or when the token has no bands. Detect it with `threshold == 0`:
+    ///      for a non-existent position `leverage` is 0, which still matches band 1, so `index`,
+    ///      `curLeverage` and `bufferBps` are populated and cannot be used as the signal.
     /// @param _account Position owner
     /// @param _collateralToken Collateral token
     /// @param _indexToken Index token
     /// @param _isLong true for a long position
-    /// @return leverage Opening leverage of the position, in basis points (10000 == 1x)
+    /// @return leverage Current leverage of the position, `size / collateral`, in basis points
+    ///         (10000 == 1x). It moves when margin is added or the position is partially closed,
+    ///         so it is not the leverage the position was opened at.
     /// @return liquidationLeverage Liquidation leverage configured for the token, in basis points
     /// @return index Matched band, 1-based (0 = token not configured)
     /// @return prevLeverage Lower bound of the matched band (0 for the first band)
@@ -329,7 +368,7 @@ contract LiquidateBuffer is Synchron {
         }
     }
 
-    /// @notice Read the size and the ORIGINAL collateral of a position
+    /// @notice Read the size and the collateral currently stored on a position
     /// @dev Split out of `getLiquidationInfo` purely to keep that function within the stack limit
     ///      (4 parameters + 8 return values already consume 12 of the 16 available slots).
     ///      Returns zeros for a non-existent position.
@@ -398,7 +437,9 @@ contract LiquidateBuffer is Synchron {
     ///      the legacy rule.
     /// @param _indexToken Index token (a channel token is resolved to its main-pool token)
     /// @param _size Position size in USD (30 decimals)
-    /// @param _collateral Original position collateral in USD (30 decimals), must be non-zero
+    /// @param _collateral Position collateral in USD (30 decimals) as currently stored by the
+    ///        Vault, must be non-zero. It reflects margin top-ups and partial closes, not the
+    ///        amount at open.
     /// @param _remainingCollateral Collateral left after the unrealised loss, in USD (30 decimals)
     /// @return true when the remaining collateral is strictly below the band's threshold
     function isForcedLiquidation(
