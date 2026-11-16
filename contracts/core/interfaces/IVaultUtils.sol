@@ -60,6 +60,12 @@ interface IVaultUtils is IEventStruct  {
     /// @param _indexToken Index token of the pool whose accounting changed
     function syncTrackedLp(address _indexToken) external returns(address);
 
+    /// @notice Divert a realised trader loss into the buyback / insurance / main pools
+    /// @param _indexToken Index token of the pool whose accounting changed
+    /// @param _collateralToken Collateral token of the loss
+    /// @param _amount Loss amount, in collateral token units
+    function divertLoss(address _user, address _indexToken, address _collateralToken, bool _isLong, uint256 _amount) external;
+
     /// @notice Validate the reserved / pool ratio after a reserve or pool-amount change
     /// @dev Reverts directly with "reserve err" (legacy error codes 50 / 52 are no longer used).
     ///      Closing a main-pool position is exempt, so an exit can never be blocked by the ratio.
@@ -106,4 +112,16 @@ interface IVaultUtils is IEventStruct  {
         bool _isLong,
         uint256 _poolCredit
     ) external;
+
+    function getTargetIndexToken(address _indexToken) external view returns(address);
+
+    function whitelistedTokens(address token) external view returns(bool);
+
+    function poolAmounts(address _indexToken, address _collateralToken) external view returns(uint256 _poolAmounts);
+
+    function reservedAmounts(address _indexToken, address _collateralToken) external view returns(uint256 _reservedAmounts);
+
+    function guaranteedUsd(address _indexToken, address _collateralToken) external view returns(uint256 _guaranteedUsd);
+
+    function tokenBalances(address _indexToken, address _collateralToken) external view returns(uint256 _tokenBalances);
 }

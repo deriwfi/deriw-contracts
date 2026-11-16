@@ -63,9 +63,12 @@ contract TradingMining is Synchron {
     /// @notice Upper bound of underwaterRate / flatRate (DER per USDT), prevents overflow in
     ///         _rateWad / _computeMint (default values are 100)
     uint256 public constant MAX_RATE = 1e6;
-    /// @notice Default minimum reserve (USDT 6 decimals, 5,000,000); the pool balance may not go below it
+    /// @notice Value written into `minReserve[usdt]` at initialize (USDT 6 decimals, 5,000,000).
+    ///         It is a leftover of the retired idle-fund withdrawal path: nothing reads it and
+    ///         nothing enforces it, so the pool balance is free to move either way.
     uint256 public constant DEFAULT_MIN_RESERVE = 5_000_000e6;
-    /// @notice Lower bound accepted by setMinReserve (USDT 6 decimals, 1,000,000)
+    /// @notice Historical floor of the retired minimum-reserve setter (USDT 6 decimals, 1,000,000).
+    ///         Nothing reads it any more; kept so the constant and its ABI entry stay stable.
     uint256 public constant MIN_RESERVE_FLOOR = 1_000_000e6;
     /// @notice System blacklist contract consulted before every DER payout
     /// @dev Hard-coded on purpose: it is a chain-level system contract, so there is nothing to
@@ -216,11 +219,15 @@ contract TradingMining is Synchron {
     /// @notice targetToken => queue summary
     mapping(address => QueueConfig) public queueConfigs;
 
-    /// @notice Treasury address for idle-fund transfers (set at initialize, changeable via setTreasury)
+    /// @notice Treasury address recorded at initialize. No setter remains and no code reads it;
+    ///         kept so the storage layout of an already deployed proxy stays untouched.
     address public treasury;
-    /// @notice targetToken => minimum reserve (USDT 6 decimals); the balance must stay above it
+    /// @notice targetToken => minimum reserve (USDT 6 decimals), recorded at initialize and never
+    ///         changed afterwards. Nothing reads it and nothing enforces it; it is kept only so the
+    ///         storage layout of an already deployed proxy stays untouched.
     mapping(address => uint256) public minReserve;
-    /// @notice Withdrawer whitelist (true = may call withdrawExcess / withdrawAllExcess)
+    /// @notice Withdrawer whitelist left over from the retired idle-fund withdrawal path.
+    ///         Nothing reads it any more; kept so the storage layout stays untouched.
     mapping(address => bool) public isWithdrawer;
     /// @notice Settlement keeper whitelist; governance may always call settleQueue
     mapping(address => bool) public isKeeper;
@@ -254,7 +261,8 @@ contract TradingMining is Synchron {
     event ContractsSet(address indexed dataReader, address indexed vault);
     /// @notice Reporter whitelist updated
     event RecorderSet(address indexed account, bool allowed);
-    /// @notice Treasury address updated
+    /// @notice Treasury address recorded at initialize. There is no setter, so this fires once
+    /// @param treasury Treasury address that was stored
     event TreasurySet(address indexed treasury);
     /// @notice DER funding source updated (payouts are pulled from it with safeTransferFrom)
     event DerSourceSet(address indexed derSource);
@@ -269,12 +277,11 @@ contract TradingMining is Synchron {
     event GovSet(address indexed gov);
     /// @notice Settlement keeper whitelist updated
     event KeeperSet(address indexed account, bool allowed);
-    /// @notice Minimum reserve updated
+    /// @notice Minimum reserve recorded at initialize. There is no setter, so this fires once
+    /// @param targetToken Target token the reserve was stored for
+    /// @param oldValue Always 0, kept so the signature matches the original
+    /// @param newValue Reserve that was stored
     event MinReserveSet(address indexed targetToken, uint256 oldValue, uint256 newValue);
-    /// @notice Idle funds transferred to the treasury
-    event ExcessWithdrawn(address indexed targetToken, address indexed to, uint256 amount, uint256 remaining);
-    /// @notice Withdrawer whitelist updated
-    event WithdrawerSet(address indexed account, bool allowed);
     /// @notice Non-main-pool call skipped
     event NonMainPoolSkipped(address sender, address indexToken, uint8 coinType);
     /// @notice Mint skipped because the curve of this pool is not configured yet
@@ -324,11 +331,6 @@ contract TradingMining is Synchron {
         _;
     }
 
-    modifier onlyWithdrawer() {
-        if(!isWithdrawer[msg.sender]) revert("withdrawer err");
-        _;
-    }
-
     /// @dev Settlement caller: governance or a whitelisted keeper.
     ///      It cannot be limited to the reporter: the VaultUtils passthrough never triggers
     ///      settlement, so a reporter-only rule would leave the queue growing forever. Keepers
@@ -341,11 +343,11 @@ contract TradingMining is Synchron {
     // ==================== Initialization and governance ====================
 
     /// @notice One-time base initialization, called after the proxy is deployed
-    /// @dev Also sets the minimum reserve to DEFAULT_MIN_RESERVE (5,000,000 USDT); it can be
-    ///      adjusted later through setMinReserve.
+    /// @dev Also records the minimum reserve as DEFAULT_MIN_RESERVE (5,000,000 USDT). No setter
+    ///      remains, so the value is fixed for the lifetime of the deployment.
     /// @param _derToken DerToken address (must not be zero, cannot be changed afterwards)
     /// @param _usdt USDT address (must not be zero, cannot be changed afterwards)
-    /// @param _treasury Treasury address for idle-fund transfers (must not be zero, changeable via setTreasury)
+    /// @param _treasury Treasury address recorded for reference (must not be zero, no setter remains)
     /// @param _derSource DER funding source for mining payouts (must not be zero, changeable via
     ///        setDerSource). It must approve this contract, otherwise the payout cannot be pulled.
     function initialize(address _derToken, address _usdt, address _treasury, address _derSource) external {
@@ -375,14 +377,6 @@ contract TradingMining is Synchron {
         if(_gov == address(0)) revert("gov err");
         gov = _gov;
         emit GovSet(_gov);
-    }
-
-    /// @notice Set the treasury address for idle-fund transfers (governance only)
-    /// @param _treasury New address (must not be zero)
-    function setTreasury(address _treasury) external onlyGov {
-        if(_treasury == address(0)) revert("treasury err");
-        treasury = _treasury;
-        emit TreasurySet(_treasury);
     }
 
     /// @notice Set the DER funding source used for mining payouts (governance only)
@@ -433,19 +427,6 @@ contract TradingMining is Synchron {
         emit DecayFactorSet(_targetToken, _decayFactor);
     }
 
-    /// @notice Set the minimum reserve of a main pool (governance only)
-    /// @dev When idle funds are transferred out, the remaining pool balance may not go below it.
-    ///      The value cannot go below MIN_RESERVE_FLOOR (1,000,000 USDT).
-    /// @param _targetToken Main-pool targetToken (must equal the USDT fixed at initialize)
-    /// @param _minReserve New minimum reserve (USDT 6 decimals)
-    function setMinReserve(address _targetToken, uint256 _minReserve) external onlyGov {
-        if(_targetToken != usdt) revert("targetToken err");
-        if(_minReserve < MIN_RESERVE_FLOOR) revert("minReserve err");
-
-        emit MinReserveSet(_targetToken, minReserve[_targetToken], _minReserve);
-        minReserve[_targetToken] = _minReserve;
-    }
-
     /// @notice Grant or revoke a settlement keeper (governance only)
     /// @dev Keepers may only call settleQueue: leaking a keeper key can move pool cash to queue
     ///      creditors but can never report PnL or mint DER.
@@ -455,17 +436,6 @@ contract TradingMining is Synchron {
         if(_keeper == address(0)) revert("keeper err");
         isKeeper[_keeper] = _allowed;
         emit KeeperSet(_keeper, _allowed);
-    }
-
-    /// @notice Grant or revoke a withdrawer (governance only)
-    /// @dev Withdrawers may call withdrawExcess / withdrawAllExcess, which move idle pool funds
-    ///      to the treasury outside Vault transactions.
-    /// @param _withdrawer Withdrawer address
-    /// @param _allowed true = grant, false = revoke
-    function setWithdrawer(address _withdrawer, bool _allowed) external onlyGov {
-        if(_withdrawer == address(0)) revert("withdrawer err");
-        isWithdrawer[_withdrawer] = _allowed;
-        emit WithdrawerSet(_withdrawer, _allowed);
     }
 
     /// @notice Transfer DER tokens held by this contract to a given address (governance only)
@@ -845,77 +815,6 @@ contract TradingMining is Synchron {
         emit QueueSettled(targetToken, processed, paidTotal, processedID[targetToken], cfg.totalOutstanding);
     }
 
-    // ==================== Idle fund transfers (onlyWithdrawer) ====================
-
-    /// @notice Transfer idle pool funds to the treasury (withdrawer only)
-    /// @dev MUST be called in a standalone transaction, never from inside a Vault call:
-    ///      Vault.transferOut is nonReentrant and the whole call would revert otherwise.
-    ///      Transferable cap = poolAmounts - minReserve[targetToken] - totalOutstanding, so the
-    ///      reserve and any unpaid queue debt are preserved. Reverts on zero amount, no excess,
-    ///      or an amount above the cap.
-    /// @param _indexToken Main-pool index token
-    /// @param _amount Amount to transfer (collateral token units, = poolAmounts unit)
-    function withdrawExcess(address _indexToken, uint256 _amount) external onlyWithdrawer {
-        if(_amount == 0) revert("amount err");
-
-        _transferExcess(_indexToken, _amount, false);
-    }
-
-    /// @notice Transfer every idle pool fund above the reserve and queue debt (withdrawer only)
-    /// @dev Same constraints as withdrawExcess. After the call the pool balance equals
-    ///      minReserve[targetToken] + totalOutstanding.
-    /// @param _indexToken Main-pool index token
-    /// @return amount Transferred amount (collateral token units, = poolAmounts unit)
-    function withdrawAllExcess(address _indexToken) external onlyWithdrawer returns (uint256 amount) {
-        (, amount) = _transferExcess(_indexToken, 0, true);
-    }
-
-    /// @dev Shared implementation of the idle-fund transfer: resolve the main pool, cap the amount
-    ///      by (poolAmounts - reserve - queue debt), move the funds to the treasury and emit.
-    ///      NOTE: this contract cannot read Vault's reserved amounts (open-position margin), so the
-    ///      cap only protects the reserve and the queue. Keep minReserve large enough to cover the
-    ///      outstanding position margin, otherwise a later profit settlement may revert when the
-    ///      Vault deducts the pool.
-    /// @param _indexToken Main-pool index token
-    /// @param _amount Requested amount (ignored when _all is true)
-    /// @param _all True = transfer the whole excess instead of _amount
-    /// @return targetToken Resolved main-pool targetToken
-    /// @return amount Transferred amount (collateral token units, = poolAmounts unit)
-    function _transferExcess(address _indexToken, uint256 _amount, bool _all)
-        internal
-        returns (address targetToken, uint256 amount)
-    {
-        targetToken = _mainPoolTarget(_indexToken);
-        if(targetToken == address(0)) revert("targetToken err");
-
-        // The withdrawal lowers the water level, so persist the peak first
-        _syncHighWatermark(targetToken);
-
-        (uint256 cash, uint256 locked) = _poolSnapshot(targetToken);
-        if(cash <= locked) revert("no excess");
-
-        uint256 excess = cash - locked;
-        amount = _all ? excess : _amount;
-        if(amount > excess) revert("excess err");
-
-        IVault(vault).transferOut(targetToken, usdt, treasury, amount);
-
-        emit ExcessWithdrawn(targetToken, treasury, amount, cash - amount);
-    }
-
-    /// @dev Pool cash and the amount locked by the reserve plus the unpaid queue debt
-    /// @param targetToken Main-pool targetToken
-    /// @return cash Current pool balance (collateral token units, = poolAmounts unit)
-    /// @return locked Reserve (USDT 6 decimals) + unpaid queue debt (collateral token units)
-    function _poolSnapshot(address targetToken) internal view returns (uint256 cash, uint256 locked) {
-        cash = IVault(vault).poolAmounts(targetToken, usdt);
-        // Neither the minimum reserve nor the unpaid queue debt may be transferred out.
-        // minReserve is stored in USDT 6 decimals while the queue debt uses the collateral token's
-        // units; main pools are USDT-collateralised, so the two are numerically identical. If a
-        // non-6-decimal collateral is ever enabled here, minReserve must be converted as well.
-        locked = minReserve[targetToken] + queueConfigs[targetToken].totalOutstanding;
-    }
-
     // ==================== Views ====================
 
     /// @notice Unpaid queue debt
@@ -924,23 +823,6 @@ contract TradingMining is Synchron {
     ///         same unit as Vault.poolAmounts; numerically 6 decimals for USDT collateral)
     function getOutstanding(address _targetToken) public view returns(uint256) {
         return queueConfigs[_targetToken].totalOutstanding;
-    }
-
-    /// @notice Idle funds currently transferable to the treasury
-    /// @dev Amount = poolAmounts[targetToken][usdt] - minReserve[targetToken] - totalOutstanding,
-    ///      i.e. exactly what withdrawExcess / withdrawAllExcess may move out. Returns 0 for a
-    ///      non-main pool, or when the pool does not exceed the reserve plus unpaid queue debt.
-    ///      Read-only helper, never emits NonMainPoolSkipped.
-    /// @param _indexToken Main-pool index token
-    /// @return amount Transferable amount (collateral token units, = poolAmounts unit)
-    function getWithdrawableAmount(address _indexToken) external view returns (uint256 amount) {
-        if(_getCoinType(_indexToken) != 1) return 0;
-
-        address targetToken = IDataReader(dataReader).getTargetIndexToken(_indexToken);
-        (uint256 cash, uint256 locked) = _poolSnapshot(targetToken);
-        if(cash <= locked) return 0;
-
-        return cash - locked;
     }
 
     /// @notice Current water level (may be negative) = pool balance - queue debt

@@ -14,6 +14,7 @@ import "./interfaces/IDataReader.sol";
 import "../Pendant/interfaces/ITradingMining.sol";
 import "../Pendant/interfaces/ICoinData.sol";
 import "../Pendant/interfaces/ILiquidateBuffer.sol";
+import "../Pendant/interfaces/IBuybackTransfer.sol";
 
 /**
  * @title VaultUtils
@@ -412,6 +413,7 @@ contract VaultUtils is Synchron, IEventStruct {
         bool _isLong, 
         address /*_receiver*/
     ) external onlyVault view returns (bytes32, uint256) {
+        slippage.validateRemoveTime(_indexToken);
         bytes32 key = vault.getPositionKey(_account, _collateralToken, _indexToken, _isLong);
         Position memory position = vault.getPositionFrom(key);
 
@@ -571,7 +573,7 @@ contract VaultUtils is Synchron, IEventStruct {
     event SetIndexTokenFeeBasisPoints(address indexed indexToken, uint256 feeBasisPoints);
     mapping(address => uint256) public indexTokenFeeBasisPoints;
     function setIndexTokenFeeBasisPoints(address _indexToken, uint256 _feeBasisPoints) external onlyGov() {
-        _indexToken = IDataReader(slippage.dataReader()).getIndexToken(_indexToken); 
+        _indexToken = dataReader().getIndexToken(_indexToken); 
         require(_indexToken != address(0) && _feeBasisPoints <= vault.MAX_FEE_BASIS_POINTS(), "setPoints err");
         indexTokenFeeBasisPoints[_indexToken] = _feeBasisPoints;
 
@@ -579,13 +581,13 @@ contract VaultUtils is Synchron, IEventStruct {
     }
 
     function getFeeBasisPoints(address _indexToken) public view returns(uint256) {
-        _indexToken = IDataReader(slippage.dataReader()).getIndexToken(_indexToken);    
+        _indexToken = dataReader().getIndexToken(_indexToken);    
         uint256 _feeBasisPoints = indexTokenFeeBasisPoints[_indexToken];
         return _feeBasisPoints == 0 ? vault.marginFeeBasisPoints() : _feeBasisPoints;
     }
 
     function _validateIndexTokenFeeRate(address _indexToken) internal view {
-        _indexToken = IDataReader(slippage.dataReader()).getIndexToken(_indexToken);  
+        _indexToken = dataReader().getIndexToken(_indexToken);  
         if(indexTokenFeeBasisPoints[_indexToken] == 0) {
             _validateFeeRate();
         }
@@ -603,7 +605,7 @@ contract VaultUtils is Synchron, IEventStruct {
      * @param _liquidationFeeRate The new liquidation fee ratio in basis points
      */
     function setLiquidationFeeRate(address _indexToken, uint256 _liquidationFeeRate) external onlyGov() {
-        _indexToken = IDataReader(slippage.dataReader()).getIndexToken(_indexToken);
+        _indexToken = dataReader().getIndexToken(_indexToken);
         require(_indexToken != address(0) && _liquidationFeeRate <= 100, "rate err");
         liquidationFeeRate[_indexToken] = _liquidationFeeRate;
 
@@ -618,7 +620,7 @@ contract VaultUtils is Synchron, IEventStruct {
      * @return The liquidation fee rate in basis points (default 10 if unset)
      */
     function getLiquidationFeeRate(address _indexToken) public view returns(uint256) {
-        _indexToken = IDataReader(slippage.dataReader()).getIndexToken(_indexToken);
+        _indexToken = dataReader().getIndexToken(_indexToken);
         uint256 _liquidationFeeRate = liquidationFeeRate[_indexToken];
         return _liquidationFeeRate == 0 ? 10 : _liquidationFeeRate;
     }
@@ -753,7 +755,7 @@ contract VaultUtils is Synchron, IEventStruct {
         _requireVault();
 
         // Main-pool close: skip the reserve check entirely
-        if(!_isIncrease && vault.getCoinType(_indexToken) == 1) {
+        if(!_isIncrease && ICoinData(phase.coinData()).getCoinType(_indexToken) == 1) {
             return;
         }
 
@@ -785,4 +787,105 @@ contract VaultUtils is Synchron, IEventStruct {
         liquidateBuffer = ILiquidateBuffer(_liquidateBuffer);
         emit SetLiquidateBuffer(_liquidateBuffer);
     }
+
+    // ***********************************************************************************
+
+    function dataReader() internal view returns(IDataReader) {
+        return IDataReader(ISlippage(slippage).dataReader());
+    }
+    
+    /// @notice Emitted when a realised loss is split across the buyback / insurance / main pools
+    /// @param indexToken Main-pool index token whose accounting changed
+    /// @param collateralToken Collateral token of the loss
+    /// @param account Trader whose loss was diverted
+    /// @param isLong true for a long position
+    /// @param totalAmount Total loss amount, in collateral token units
+    /// @param lossSplit Per-slice receiver and amount
+    event LossDiverted(
+        address indexed indexToken,
+        address indexed collateralToken,
+        address indexed account,
+        bool isLong,
+        uint256 totalAmount,
+        IBuybackTransfer.LossSplit lossSplit
+    );
+
+    /// @notice BuybackTransfer contract (address(0) = buyback diversion disabled)
+    /// @dev Appended after `liquidateBuffer` so the proxy layout stays upgrade-safe.
+    IBuybackTransfer public buybackTransfer;
+
+    /// @notice Emitted when the BuybackTransfer address is updated
+    event SetBuybackTransfer(address indexed buybackTransfer);
+
+    /// @notice Set the BuybackTransfer contract
+    /// @dev Optional integration: when unset (address(0)) callers must fall back to diverting
+    ///      nothing, i.e. the whole income stays in the main pool.
+    /// @param _buybackTransfer BuybackTransfer contract address (must implement IBuybackTransfer)
+    function setBuybackTransfer(address _buybackTransfer) external onlyGov {
+        buybackTransfer = IBuybackTransfer(_buybackTransfer);
+        emit SetBuybackTransfer(_buybackTransfer);
+    }
+
+    /// @notice Divert a realised trader loss into the buyback / insurance / main pools
+    /// @dev Called by the Vault right after the loss was credited to the main pool, so the pool
+    ///      balance already contains `_amount`. Each slice is then transferred out of that pool to
+    ///      its receiver. A receiver equal to the Vault itself is skipped, which is the way to say
+    ///      "leave this slice in the main pool".
+    ///      No-op when BuybackTransfer is not wired or no tier is active (splitLoss then returns
+    ///      everything as main).
+    /// @param _user Trader whose loss is being diverted
+    /// @param _indexToken Index token of the pool whose accounting changed
+    /// @param _collateralToken Collateral token of the loss
+    /// @param _isLong true for a long position
+    /// @param _amount Loss amount, in collateral token units
+    function divertLoss(address _user, address _indexToken, address _collateralToken, bool _isLong, uint256 _amount) external {
+        _requireVault();
+
+        if(address(buybackTransfer) == address(0) || _amount == 0) return;
+
+        // syncTier both persists the current tier and returns it, so a zero tier means "no
+        // diversion configured or not activated yet": leave the whole loss in the main pool
+        // instead of forwarding it to mainPool (which would move funds out of the pool).
+        if(buybackTransfer.syncTier(_indexToken) == 0) return;
+
+        IBuybackTransfer.LossSplit memory lossSplit = buybackTransfer.splitLoss(_indexToken, _amount);
+
+        if(lossSplit.buybackAmount > 0 && lossSplit.buybackReceiver != address(vault)) {
+            vault.transferOutFor(_indexToken, _collateralToken, lossSplit.buybackReceiver, lossSplit.buybackAmount);
+        }
+        if(lossSplit.insuranceAmount > 0 && lossSplit.insuranceReceiver != address(vault)) {
+            vault.transferOutFor(_indexToken, _collateralToken, lossSplit.insuranceReceiver, lossSplit.insuranceAmount);
+        }
+
+        if(lossSplit.mainAmount > 0 && lossSplit.mainReceiver != address(vault)) {
+            vault.transferOutFor(_indexToken, _collateralToken, lossSplit.mainReceiver, lossSplit.mainAmount);
+        }
+
+        emit LossDiverted(_indexToken, _collateralToken, _user, _isLong, _amount, lossSplit);
+    }
+
+    function getTargetIndexToken(address _indexToken) external view returns(address) {
+        return dataReader().getTargetIndexToken(_indexToken);
+    }
+
+    function whitelistedTokens(address token) external view returns(bool) {
+        return dataReader().whitelistedTokens(token);  
+    }
+
+    function poolAmounts(address _indexToken, address _collateralToken) external view returns(uint256 _poolAmounts) {
+        return dataReader().poolAmounts(_indexToken, _collateralToken);
+    }
+
+    function reservedAmounts(address _indexToken, address _collateralToken) external view returns(uint256 _reservedAmounts) {
+        return dataReader().reservedAmounts(_indexToken, _collateralToken);
+    }
+
+    function guaranteedUsd(address _indexToken, address _collateralToken) external view returns(uint256 _guaranteedUsd) {
+        return dataReader().guaranteedUsd(_indexToken, _collateralToken);
+    }
+
+    function tokenBalances(address _indexToken, address _collateralToken) external view returns(uint256 _tokenBalances) {
+        return dataReader().tokenBalances(_indexToken, _collateralToken);
+    }
+
 }

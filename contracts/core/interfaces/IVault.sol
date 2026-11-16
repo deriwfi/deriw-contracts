@@ -54,10 +54,17 @@ interface IVault is IEventStruct {
     
     
     function transferOut(
-        address _indexToken, 
-        address _collateralToken, 
-        address _receiver, 
+        address _indexToken,
+        address _collateralToken,
+        address _receiver,
         uint256 amount
+    ) external;
+
+    function transferOutFor(
+        address _indexToken,
+        address _collateralToken,
+        address _receiver,
+        uint256 _amount
     ) external;
 
     function increasePosition(
@@ -189,6 +196,4 @@ interface IVault is IEventStruct {
     function referralData() external view returns(address);
 
     function updateAveragePrice(address _indexToken, uint256 _globalLongAveragePrices, uint256 _globalShortAveragePrices) external;
-
-    function getCoinType(address _indexToken) external view returns(uint8);
 }

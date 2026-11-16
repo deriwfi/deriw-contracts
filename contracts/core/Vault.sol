@@ -160,7 +160,7 @@ contract Vault is Synchron, ReentrancyGuard, IEventStruct {
     }
 
     modifier onlyWhitelistedToken(address _token) {
-        if(!dataReader().whitelistedTokens(_token)) revert();
+        if(!vaultUtils.whitelistedTokens(_token)) revert();
         _;
     }
 
@@ -245,7 +245,7 @@ contract Vault is Synchron, ReentrancyGuard, IEventStruct {
 
     function setMaxLeverage(uint256 _maxLeverage) external {
         _onlyGov();
-        _validate(_maxLeverage >= MIN_LEVERAGE && _maxLeverage <= MAX_LEVERAGE, 2);
+        if(_maxLeverage < MIN_LEVERAGE || _maxLeverage > MAX_LEVERAGE) revert();
         maxLeverage = _maxLeverage;
     }
 
@@ -260,11 +260,11 @@ contract Vault is Synchron, ReentrancyGuard, IEventStruct {
         uint256 _minProfitTime
     ) external {
         _onlyGov();
-        require(
-            _marginFeeBasisPoints <= MAX_FEE_BASIS_POINTS &&
-            _liquidationFeeUsd <= MAX_LIQUIDATION_FEE_USD,
-            "DATA"
-        );
+
+        if(
+            _marginFeeBasisPoints > MAX_FEE_BASIS_POINTS ||
+            _liquidationFeeUsd > MAX_LIQUIDATION_FEE_USD
+        ) revert();
 
         marginFeeBasisPoints = _marginFeeBasisPoints;
         liquidationFeeUsd = _liquidationFeeUsd;
@@ -310,7 +310,7 @@ contract Vault is Synchron, ReentrancyGuard, IEventStruct {
 
     function directPoolDeposit(address _indexToken, address _collateralToken, uint256 _amount) external {
         _validateManager();
-        _validate(_amount > 0 && dataReader().whitelistedTokens(_indexToken), 15);
+        if(_amount == 0 || !vaultUtils.whitelistedTokens(_indexToken)) revert();
 
         _transferIn(_indexToken, _collateralToken, _amount);
 
@@ -325,23 +325,15 @@ contract Vault is Synchron, ReentrancyGuard, IEventStruct {
         _increasePoolAmount(_indexToken, _collateralToken, _amount);
     }
 
-
     function transferOut(
         address _indexToken, 
         address _collateralToken, 
         address _receiver, 
         uint256 _amount
-    ) external onlyWhitelistedToken(_indexToken)  nonReentrant {
-        _validateManager();
-
+    ) external nonReentrant {
         // persist the water-level peak before the balance (and trackedLp) drops
         _indexToken = vaultUtils.syncTrackedLp(_indexToken);
-        _poolAmounts[_indexToken][_collateralToken] -= _amount;
-        emit DecreasePoolAmount(_indexToken, _collateralToken, _amount);
-        
-        _transferOut(_indexToken, _collateralToken, _amount, _receiver);
-
-        emit TransferOut(_collateralToken, _receiver, _amount);
+        _transferOutFor(_indexToken, _collateralToken, _receiver, _amount);
     }
 
     function increasePosition(
@@ -418,7 +410,6 @@ contract Vault is Synchron, ReentrancyGuard, IEventStruct {
         address _receiver
     ) external  nonReentrant returns (uint256) {
         _validateRouter();
-        slippage.validateRemoveTime(_indexToken);
         uint8 cType = phase.codeType(_key);
 
         return _decreasePosition(
@@ -673,7 +664,9 @@ contract Vault is Synchron, ReentrancyGuard, IEventStruct {
                     _indexToken, _collateralToken, _account, _isLong, remainingCollateral / 1e24
                 );
 
-                _increasePoolAmount(_indexToken, _collateralToken, usdToTokenMin(_collateralToken, remainingCollateral));
+                uint256 tokenAmount = usdToTokenMin(_collateralToken, remainingCollateral);
+                _increasePoolAmount(_indexToken, _collateralToken, tokenAmount);
+                vaultUtils.divertLoss(_account, _indexToken, _collateralToken, _isLong, tokenAmount);
             }
 
             _decreaseReservedAmount(_indexToken, _collateralToken, position.reserveAmount);
@@ -825,7 +818,7 @@ contract Vault is Synchron, ReentrancyGuard, IEventStruct {
     }
  
     function _transferIn(address _indexToken, address _collateralToken, uint256 _amount) private {
-        _indexToken = dataReader().getTargetIndexToken(_indexToken);
+        _indexToken = vaultUtils.getTargetIndexToken(_indexToken);
 
         _tokenBalances[_indexToken][_collateralToken] += _amount;
     }
@@ -836,7 +829,7 @@ contract Vault is Synchron, ReentrancyGuard, IEventStruct {
         uint256 _amount, 
         address _receiver
     ) private returns(TransferAmountData memory tData) {
-        _indexToken = dataReader().getTargetIndexToken(_indexToken);
+        _indexToken = vaultUtils.getTargetIndexToken(_indexToken);
         
         if(_amount > 0) {
             _tokenBalances[_indexToken][_collateralToken] -= _amount;
@@ -850,7 +843,7 @@ contract Vault is Synchron, ReentrancyGuard, IEventStruct {
     }
 
     function _increasePoolAmount(address _indexToken, address _collateralToken, uint256 _amount) private {
-        _indexToken = dataReader().getTargetIndexToken(_indexToken);
+        _indexToken = vaultUtils.getTargetIndexToken(_indexToken);
 
         _poolAmounts[_indexToken][_collateralToken] += _amount;
         // fees / funding / realised losses / liquidation proceeds raise the level, so
@@ -861,7 +854,7 @@ contract Vault is Synchron, ReentrancyGuard, IEventStruct {
     }
 
     function _decreasePoolAmount(address _indexToken, address _collateralToken, uint256 _amount) private {
-        _indexToken = dataReader().getTargetIndexToken(_indexToken);
+        _indexToken = vaultUtils.getTargetIndexToken(_indexToken);
 
         if(_poolAmounts[_indexToken][_collateralToken] < _amount) revert();
 
@@ -875,7 +868,7 @@ contract Vault is Synchron, ReentrancyGuard, IEventStruct {
     }
 
     function _increaseReservedAmount(address _indexToken, address _collateralToken, uint256 _amount) private {
-        _indexToken = dataReader().getTargetIndexToken(_indexToken);
+        _indexToken = vaultUtils.getTargetIndexToken(_indexToken);
         _reservedAmounts[_indexToken][_collateralToken] +=_amount;
 
         // Reserve ratio check lives in VaultUtils (keeps the Vault bytecode small)
@@ -884,21 +877,21 @@ contract Vault is Synchron, ReentrancyGuard, IEventStruct {
     }
 
     function _decreaseReservedAmount(address _indexToken, address _collateralToken, uint256 _amount) private {
-        _indexToken = dataReader().getTargetIndexToken(_indexToken);
+        _indexToken = vaultUtils.getTargetIndexToken(_indexToken);
         _reservedAmounts[_indexToken][_collateralToken] -= _amount;
 
         emit DecreaseReservedAmount(_indexToken, _collateralToken, _amount);
     }
 
     function _increaseGuaranteedUsd(address _indexToken, address _collateralToken,  uint256 _usdAmount) private {        
-        _indexToken = dataReader().getTargetIndexToken(_indexToken);
+        _indexToken = vaultUtils.getTargetIndexToken(_indexToken);
         _guaranteedUsd[_indexToken][_collateralToken] += _usdAmount;
         
         emit IncreaseGuaranteedUsd(_indexToken, _collateralToken, _usdAmount);
     }
 
     function _decreaseGuaranteedUsd(address _indexToken, address _collateralToken, uint256 _usdAmount) private {
-        _indexToken = dataReader().getTargetIndexToken(_indexToken);
+        _indexToken = vaultUtils.getTargetIndexToken(_indexToken);
         _guaranteedUsd[_indexToken][_collateralToken] -= _usdAmount;
 
         emit DecreaseGuaranteedUsd(_indexToken, _collateralToken, _usdAmount);
@@ -922,9 +915,8 @@ contract Vault is Synchron, ReentrancyGuard, IEventStruct {
 
     // we have this validation as a function instead of a modifier to reduce contract size
     function _onlyGov() private view {
-        _validate(msg.sender == gov, 53);
+        if(msg.sender != gov) revert();
     }
-
 
     // we have this validation as a function instead of a modifier to reduce contract size
     function _validateManager() private view {
@@ -976,6 +968,19 @@ contract Vault is Synchron, ReentrancyGuard, IEventStruct {
             rtl._indexToken, rtl._collateralToken, rtl._account, rtl._isLong, rtl._sizeDelta, dData.price
         );
 
+        if (!hasProfit && adjustedDelta > 0) {
+            position.collateral -= adjustedDelta;
+
+            // transfer realised losses to the pool for short positions
+            // realised losses for long positions are not transferred here as
+            // _increasePoolAmount was already called in increasePosition for longs
+            uint256 tokenAmount = usdToTokenMin(rtl._collateralToken, adjustedDelta);
+            _increasePoolAmount(rtl._indexToken, rtl._collateralToken, tokenAmount);
+            vaultUtils.divertLoss(rtl._account, rtl._indexToken, rtl._collateralToken, rtl._isLong, tokenAmount);
+
+            position.realisedPnl -= int256(adjustedDelta);   
+        }
+
         uint256 usdOut;
         // Profit: record the realised PnL and remove only the part actually paid now. When the
         // pool cannot cover the whole profit, TradingMining queues the remainder and returns 0;
@@ -992,25 +997,12 @@ contract Vault is Synchron, ReentrancyGuard, IEventStruct {
             usdOut = payableProfit;
         }
 
-        if (!hasProfit && adjustedDelta > 0) {
-            position.collateral -= adjustedDelta;
-
-            // transfer realised losses to the pool for short positions
-            // realised losses for long positions are not transferred here as
-            // _increasePoolAmount was already called in increasePosition for longs
-            uint256 tokenAmount = usdToTokenMin(rtl._collateralToken, adjustedDelta);
-            _increasePoolAmount(rtl._indexToken, rtl._collateralToken, tokenAmount);
-            
-            position.realisedPnl -= int256(adjustedDelta);
-        }
-
         // reduce the position's collateral by _collateralDelta
         // transfer _collateralDelta out
         if (rtl._collateralDelta > 0) {
             usdOut = usdOut + rtl._collateralDelta;
             position.collateral -= rtl._collateralDelta;
         }
-
 
         // if the position will be closed, then transfer the remaining collateral out
         if (position.size == rtl._sizeDelta) {
@@ -1032,7 +1024,7 @@ contract Vault is Synchron, ReentrancyGuard, IEventStruct {
         // Not enough payout to cover the fee. A full close has already zeroed the collateral, so
         // there is nothing left to charge: revert and let the position follow the liquidation path.
         // A partial close still holds the remaining position's collateral, so charge it there.
-        if(position.collateral < fee) revert("insufficient collateral for fee");
+        if(position.collateral < fee) revert("ERR");
 
         position.collateral -= fee;
         // usdOutAfterFee stays usdOut: the fee was taken from the remaining collateral instead
@@ -1061,25 +1053,20 @@ contract Vault is Synchron, ReentrancyGuard, IEventStruct {
         );
     }
 
-    function getCoinType(address _indexToken) public  view returns(uint8) {
-        return ICoinData(IPhase(phase).coinData()).getCoinType(_indexToken);
-    }
-    
-
     function poolAmounts(address _indexToken, address _collateralToken) external view returns(uint256) {
-        return dataReader().poolAmounts(_indexToken, _collateralToken);
+        return vaultUtils.poolAmounts(_indexToken, _collateralToken);
     }
 
     function reservedAmounts(address _indexToken, address _collateralToken) external view returns(uint256) {
-        return dataReader().reservedAmounts(_indexToken, _collateralToken);
+        return vaultUtils.reservedAmounts(_indexToken, _collateralToken);
     }
 
     function guaranteedUsd(address _indexToken, address _collateralToken) external view returns(uint256) {
-        return dataReader().guaranteedUsd(_indexToken, _collateralToken);
+        return vaultUtils.guaranteedUsd(_indexToken, _collateralToken);
     }
 
     function tokenBalances(address _indexToken, address _collateralToken) external view returns(uint256) {
-        return dataReader().tokenBalances(_indexToken, _collateralToken);
+        return vaultUtils.tokenBalances(_indexToken, _collateralToken);
     }
 
     mapping (address => uint256) public maxGlobalLongSizes;
@@ -1170,4 +1157,29 @@ contract Vault is Synchron, ReentrancyGuard, IEventStruct {
         emit LiquidationFeeUsd(_collateralToken, _liquidationFeeUsd, tokenAmount, _indexToken);
     }
 
+    function transferOutFor(
+        address _indexToken, 
+        address _collateralToken, 
+        address _receiver, 
+        uint256 _amount
+    ) external {
+        _indexToken = vaultUtils.getTargetIndexToken(_indexToken);
+        _transferOutFor(_indexToken, _collateralToken, _receiver, _amount);
+    }
+
+    function _transferOutFor(
+        address _indexToken, 
+        address _collateralToken, 
+        address _receiver, 
+        uint256 _amount
+    ) internal onlyWhitelistedToken(_indexToken) {
+        _validateManager();
+
+        _poolAmounts[_indexToken][_collateralToken] -= _amount;
+        emit DecreasePoolAmount(_indexToken, _collateralToken, _amount);
+        
+        _transferOut(_indexToken, _collateralToken, _amount, _receiver);
+
+        emit TransferOut(_collateralToken, _receiver, _amount);
+    }
 }
