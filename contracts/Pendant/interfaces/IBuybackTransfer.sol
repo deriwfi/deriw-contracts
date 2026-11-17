@@ -11,7 +11,9 @@ interface IBuybackTransfer {
         uint256 mainAmount;
     }
 
-    function syncTier(address _indexToken) external returns (uint256 newTier);
+    function syncTier(address _indexToken, uint256 _amount)
+        external
+        returns (LossSplit memory lossSplit);
 
     function getH(address _indexToken) external view returns (uint256);
 

@@ -37,12 +37,20 @@ import "./interfaces/ICoinData.sol";
 ///      stops once H falls below 1,500,000. Band 2 behaves the same between 4,500,000 and
 ///      5,000,000.
 ///
-///      Only main-pool tokens participate: everything else emits `NonMainPoolSkipped` and is
-///      ignored. Tables are stored per resolved main-pool token, so a channel token and its main
-///      pool share one table.
+///      WRITING a table requires a main-pool token. `setTiers` / `clearTiers` / `syncTier` run the
+///      argument through `_mainPoolTarget`, which checks `coinData.getCoinType(token) == 1` and
+///      emits `NonMainPoolSkipped` for anything else. A channel token is registered with its own
+///      coin type, so it is rejected here; the table always lives under the resolved main-pool
+///      token, and can only be written by naming that token.
+///
+///      READING resolves the token without the coin-type check: `getH` / `getCurrentTier` /
+///      `getDivertRates` / `splitLoss` call `dataReader.getTargetIndexToken` directly, so passing a
+///      channel token reports the table of its main pool. Reads and writes therefore agree on the
+///      table contents, but only writes are restricted to the main-pool token.
 ///
 ///      This contract only decides HOW a loss is split. Moving the funds is `VaultUtils.divertLoss`,
-///      which asks `splitLoss` and then calls `Vault.transferOutFor` for each slice.
+///      which calls `syncTier` once to persist the band and receive the split, then calls
+///      `Vault.transferOutFor` for each slice.
 contract BuybackTransfer is Synchron {
 
     /// @notice Basis-point denominator (10000 == 100%)
@@ -240,8 +248,12 @@ contract BuybackTransfer is Synchron {
     ///        - band 1 openThreshold >= MIN_FIRST_OPEN_THRESHOLD (1,000,000 USDT)
     ///        - band 1 closeThreshold >= MIN_FIRST_CLOSE_THRESHOLD (500,000 USDT)
     ///      A failing entry reverts the whole call, so a rejected reconfiguration leaves the previous
-    ///      table untouched. A non-main pool is skipped with `NonMainPoolSkipped` instead of reverting.
-    /// @param _indexToken Index token, a channel token is resolved to its main-pool token
+    ///      table untouched. A non-main pool also reverts: `NonMainPoolSkipped` is emitted by
+    ///      `_mainPoolTarget` and then rolled back with the rest of the call, so a batch script has
+    ///      to filter the index tokens itself instead of relying on the event.
+    /// @param _indexToken Main-pool index token. A channel token carries its own coin type and is
+    ///        rejected with `NonMainPoolSkipped`, so the main-pool token has to be named to write
+    ///        the table it owns
     /// @param _tiers Complete band table, 1-based after storage
     function setTiers(address _indexToken, DivertTier[] calldata _tiers) external onlyGov {
         if(_indexToken == address(0)) revert("indexToken err");
@@ -250,7 +262,7 @@ contract BuybackTransfer is Synchron {
         if(len > MAX_TIERS) revert("too many tiers");
 
         address token = _mainPoolTarget(_indexToken);
-        if(token == address(0)) return;
+        if(token == address(0)) revert();
 
         _clearTiers(token);
 
@@ -294,7 +306,9 @@ contract BuybackTransfer is Synchron {
     /// @notice Remove every band of a token, disabling the split for it only
     /// @dev Also resets the stored band, so a later reconfiguration starts from "no band active".
     ///      Idempotent: a token without bands is a no-op and emits nothing.
-    /// @param _indexToken Index token, a channel token is resolved to its main-pool token
+    /// @param _indexToken Main-pool index token. A channel token carries its own coin type and is
+    ///        rejected with `NonMainPoolSkipped`, so the main-pool token has to be named to write
+    ///        the table it owns
     function clearTiers(address _indexToken) external onlyGov {
         address token = _mainPoolTarget(_indexToken);
         if(token == address(0)) revert();
@@ -302,25 +316,47 @@ contract BuybackTransfer is Synchron {
         _clearTiers(token);
     }
 
-    /// @notice Persist the band implied by the current level
+    /// @notice Persist the band implied by the current level and split this loss in one call
     /// @dev The hysteresis comparison needs the previously stored band, so this write is what makes
     ///      the buffer regions work. Callers that only read (`getCurrentTier`) do not persist.
-    ///      No-op for a non-main pool: returns 0 and emits `NonMainPoolSkipped`.
-    /// @param _indexToken Index token, a channel token is resolved to its main-pool token
-    /// @return newTier Band after the update (0 == no band active)
-    function syncTier(address _indexToken) external returns (uint256 newTier) {
+    ///      Restricted to VaultUtils (the loss diversion path, which calls this on every losing
+    ///      close) and governance. A public entry point would let anyone pin the stored band inside
+    ///      a buffer region: push H above an open threshold, sync, pull the liquidity back, and the
+    ///      higher band stays active until H drops below its close threshold. Governance keeps
+    ///      access because it is already the highest privilege here and recovery needs it.
+    ///      Doing the split here as well removes one external call plus one `getTargetIndexToken`
+    ///      and one `poolAmounts` round trip from every losing close.
+    ///      A non-main pool returns an all-zero split and emits `NonMainPoolSkipped`, so the caller
+    ///      moves nothing.
+    /// @param _indexToken Main-pool index token. A channel token carries its own coin type and is
+    ///        rejected with `NonMainPoolSkipped`, so the main-pool token has to be named to write
+    ///        the table it owns
+    /// @param _amount Loss amount to split
+    /// @return lossSplit Per-slice receivers and amounts for this loss
+    function syncTier(address _indexToken, uint256 _amount)
+        external
+        returns (LossSplit memory lossSplit)
+    {
+        if(msg.sender != vault.vaultUtils() && msg.sender != gov) revert("auth err");
         if(_indexToken == address(0)) revert("indexToken err");
 
         address token = _mainPoolTarget(_indexToken);
-        if(token == address(0)) return 0;
+        if(token == address(0)) return lossSplit;
 
         uint256 oldTier = currentTier[token];
-        newTier = _resolveTier(token, getH(token), oldTier);
+        uint256 newTier = _resolveTier(token, getH(token), oldTier);
 
         if(newTier != oldTier) {
             currentTier[token] = newTier;
             emit CurrentTierUpdated(token, oldTier, newTier);
         }
+
+        // No band in force: nothing is diverted, so return an all-zero split. That differs from
+        // `splitLoss`, which reports the whole amount as "kept in the main pool"; here an empty
+        // struct is what tells the caller there is nothing to transfer.
+        if(newTier == 0) return lossSplit;
+
+        return _buildSplit(token, newTier, _amount);
     }
 
     /// @notice Water level of a token: the main pool balance held by the Vault
@@ -370,6 +406,9 @@ contract BuybackTransfer is Synchron {
 
     /// @notice Shares of the active band
     /// @dev All zeros when no band is configured or no band is active, which means "no diversion".
+    ///      Only meaningful for a main-pool token: a channel token is resolved to its main pool
+    ///      here, so the figures describe that pool, while the write path (syncTier) rejects a
+    ///      channel token outright and no diversion actually happens for it.
     /// @param _indexToken Index token, a channel token is resolved to its main-pool token
     /// @return tier Active band (0 == none)
     /// @return buybackBps Share for the buyback pool, in basis points
@@ -400,27 +439,41 @@ contract BuybackTransfer is Synchron {
     ///      receiver: the caller can rely on `mainAmount == _amount` and skip every transfer.
     ///      The receivers are returned whether or not the corresponding amount is zero; a receiver
     ///      equal to the Vault means "keep this slice in the pool".
+    ///      Only meaningful for a main-pool token: a channel token is resolved to its main pool
+    ///      here, so the figures describe that pool, while the write path (syncTier) rejects a
+    ///      channel token outright and no diversion actually happens for it.
     /// @param _indexToken Index token, a channel token is resolved to its main-pool token
-    /// @param _amount Loss amount, in USDT
+    /// @param _amount Loss amount
     /// @return lossSplit Per-slice receivers and amounts
-    function splitLoss(address _indexToken, uint256 _amount) external view returns (LossSplit memory lossSplit) {
+    function splitLoss(address _indexToken, uint256 _amount) external view returns (LossSplit memory) {
+        address token = _resolve(_indexToken);
+        if(tierCount[token] == 0) return _buildSplit(token, 0, _amount);
+
+        return _buildSplit(token, _resolveTier(token, getH(token), currentTier[token]), _amount);
+    }
+
+    /// @dev Fill a LossSplit for an already resolved token and band
+    /// @dev Shared by `splitLoss` (view) and `syncTier` (which already resolved both), so the band
+    ///      decision is not repeated. With no active band the whole amount stays in the main pool.
+    /// @param _token Main-pool token (already resolved)
+    /// @param _tier Band in force (0 == none)
+    /// @param _amount Loss amount
+    /// @return lossSplit Per-slice receivers and amounts
+    function _buildSplit(address _token, uint256 _tier, uint256 _amount)
+        internal
+        view
+        returns (LossSplit memory lossSplit)
+    {
         lossSplit.buybackReceiver = buybackPool;
         lossSplit.insuranceReceiver = insuranceFund;
         lossSplit.mainReceiver = mainPool;
 
-        address token = _resolve(_indexToken);
-        if(tierCount[token] == 0) {
+        if(_tier == 0 || _amount == 0) {
             lossSplit.mainAmount = _amount;
             return lossSplit;
         }
 
-        uint256 tier = _resolveTier(token, getH(token), currentTier[token]);
-        if(tier == 0) {
-            lossSplit.mainAmount = _amount;
-            return lossSplit;
-        }
-
-        DivertTier memory t = tiers[token][tier];
+        DivertTier memory t = tiers[_token][_tier];
         lossSplit.buybackAmount = _amount * t.buybackBps / BASIS_POINTS_DIVISOR;
         lossSplit.insuranceAmount = _amount * t.insuranceBps / BASIS_POINTS_DIVISOR;
         lossSplit.mainAmount = _amount - lossSplit.buybackAmount - lossSplit.insuranceAmount;
@@ -428,8 +481,11 @@ contract BuybackTransfer is Synchron {
 
     /// @dev Band decision with hysteresis.
     ///      - the stored band can only be left by falling strictly below its closeThreshold
-    ///      - once it is left (or nothing is stored), the highest band whose openThreshold is
-    ///        strictly exceeded wins
+    ///      - when it is left, the band walks down ONE step at a time and stops at the highest
+    ///        band whose closeThreshold is still satisfied. A level that falls through several
+    ///        bands therefore lands on the highest band that is still in force, instead of being
+    ///        reset to 0 and skipping the buffer regions of the bands in between.
+    ///      - after that, the highest band whose openThreshold is strictly exceeded wins
     ///      Entering and leaving therefore use different thresholds, which is what prevents a level
     ///      hovering on a boundary from flipping the split every block.
     /// @param _token Main-pool token (already resolved)
@@ -444,8 +500,11 @@ contract BuybackTransfer is Synchron {
 
         if(tier > len) tier = len;
 
-        if(tier > 0 && _h < tiers[_token][tier].closeThreshold) {
-            tier = 0;
+        // Step down instead of jumping straight to 0. With bands 1..n this walks at most n times,
+        // and the strict increase of closeThreshold guarantees it stops at the first band whose
+        // buffer still covers _h.
+        while(tier > 0 && _h < tiers[_token][tier].closeThreshold) {
+            tier--;
         }
 
         for(uint256 i = len; i > tier; i--) {

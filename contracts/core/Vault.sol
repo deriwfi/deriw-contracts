@@ -410,6 +410,7 @@ contract Vault is Synchron, ReentrancyGuard, IEventStruct {
         address _receiver
     ) external  nonReentrant returns (uint256) {
         _validateRouter();
+        slippage.validateRemoveTime(_indexToken);
         uint8 cType = phase.codeType(_key);
 
         return _decreasePosition(
@@ -971,9 +972,6 @@ contract Vault is Synchron, ReentrancyGuard, IEventStruct {
         if (!hasProfit && adjustedDelta > 0) {
             position.collateral -= adjustedDelta;
 
-            // transfer realised losses to the pool for short positions
-            // realised losses for long positions are not transferred here as
-            // _increasePoolAmount was already called in increasePosition for longs
             uint256 tokenAmount = usdToTokenMin(rtl._collateralToken, adjustedDelta);
             _increasePoolAmount(rtl._indexToken, rtl._collateralToken, tokenAmount);
             vaultUtils.divertLoss(rtl._account, rtl._indexToken, rtl._collateralToken, rtl._isLong, tokenAmount);

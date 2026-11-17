@@ -413,7 +413,6 @@ contract VaultUtils is Synchron, IEventStruct {
         bool _isLong, 
         address /*_receiver*/
     ) external onlyVault view returns (bytes32, uint256) {
-        slippage.validateRemoveTime(_indexToken);
         bytes32 key = vault.getPositionKey(_account, _collateralToken, _indexToken, _isLong);
         Position memory position = vault.getPositionFrom(key);
 
@@ -843,12 +842,8 @@ contract VaultUtils is Synchron, IEventStruct {
 
         if(address(buybackTransfer) == address(0) || _amount == 0) return;
 
-        // syncTier both persists the current tier and returns it, so a zero tier means "no
-        // diversion configured or not activated yet": leave the whole loss in the main pool
-        // instead of forwarding it to mainPool (which would move funds out of the pool).
-        if(buybackTransfer.syncTier(_indexToken) == 0) return;
-
-        IBuybackTransfer.LossSplit memory lossSplit = buybackTransfer.splitLoss(_indexToken, _amount);
+        IBuybackTransfer.LossSplit memory lossSplit = buybackTransfer.syncTier(_indexToken, _amount);
+        if(lossSplit.mainReceiver == address(0)) return;
 
         if(lossSplit.buybackAmount > 0 && lossSplit.buybackReceiver != address(vault)) {
             vault.transferOutFor(_indexToken, _collateralToken, lossSplit.buybackReceiver, lossSplit.buybackAmount);
