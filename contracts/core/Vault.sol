@@ -331,6 +331,7 @@ contract Vault is Synchron, ReentrancyGuard, IEventStruct {
         address _receiver, 
         uint256 _amount
     ) external nonReentrant {
+        _validateManager();
         // persist the water-level peak before the balance (and trackedLp) drops
         _indexToken = vaultUtils.syncTrackedLp(_indexToken);
         _transferOutFor(_indexToken, _collateralToken, _receiver, _amount);
@@ -1161,6 +1162,7 @@ contract Vault is Synchron, ReentrancyGuard, IEventStruct {
         address _receiver, 
         uint256 _amount
     ) external {
+        if(msg.sender != address(vaultUtils)) revert();
         _indexToken = vaultUtils.getTargetIndexToken(_indexToken);
         _transferOutFor(_indexToken, _collateralToken, _receiver, _amount);
     }
@@ -1171,8 +1173,6 @@ contract Vault is Synchron, ReentrancyGuard, IEventStruct {
         address _receiver, 
         uint256 _amount
     ) internal onlyWhitelistedToken(_indexToken) {
-        _validateManager();
-
         _poolAmounts[_indexToken][_collateralToken] -= _amount;
         emit DecreasePoolAmount(_indexToken, _collateralToken, _amount);
         
